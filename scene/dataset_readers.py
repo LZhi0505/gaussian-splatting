@@ -118,6 +118,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         cam_infos.append(cam_info)
     # 在读取完所有相机信息后换行
     sys.stdout.write('\n')
+    print("valid Colmap camera size: {}".format(len(cam_infos)))
 
     # 返回整理好的相机信息列表
     return cam_infos
@@ -169,6 +170,28 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
     # 根据图片名称对相机信息进行排序，以保证顺序一致性
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
+    ## if depth_params_file isnt there AND depths file is here -> throw error
+    depths_params = None
+    if depths != "":
+        try:
+            with open(depth_params_file, "r") as f:
+                depths_params = json.load(f)
+            all_scales = np.array([depths_params[key]["scale"] for key in depths_params])
+            if (all_scales > 0).sum():
+                med_scale = np.median(all_scales[all_scales > 0])
+            else:
+                med_scale = 0
+            for key in depths_params:
+                depths_params[key]["med_scale"] = med_scale
+
+        except FileNotFoundError:
+            print(f"Error: depth_params.json file not found at path '{depth_params_file}'.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
+            sys.exit(1)
 
     # 根据是否为评估模式（eval），将相机分为训练集和测试集
     # 如果为评估模式，根据llffhold参数（通常用于LLFF数据集）间隔选择测试相机
