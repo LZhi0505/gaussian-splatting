@@ -98,8 +98,8 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         if intr.model=="SIMPLE_PINHOLE" or intr.model=="SIMPLE_RADIAL":
             # 如果是简单针孔模型，只有一个焦距参数
             focal_length_x = intr.params[0]
-            FovY = focal2fov(focal_length_x, height)    # 计算垂直方向的视场角
-            FovX = focal2fov(focal_length_x, width)     # 计算水平方向的视场角
+            FovY = focal2fov(focal_length_x, height)    # 计算垂直方向的视场角: 2 * arctan(H / 2fy))
+            FovX = focal2fov(focal_length_x, width)     # 计算水平方向的视场角: 2 * arctan(W / 2fx)
         elif intr.model=="PINHOLE":
             # 如果是针孔模型，有两个焦距参数
             focal_length_x = intr.params[0]
@@ -122,7 +122,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         image_name = extr.name
         depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
 
-        # 创建相机信息类CameraInfo对象 (包含旋转矩阵、平移向量、视场角、图像数据、图片路径、图片名、宽度、高度)，并添加到列表cam_infos中
+        # 创建相机信息类CameraInfo对象 (包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height)，并添加到列表cam_infos中
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path,
                               width=width, height=height, is_test=image_name in test_cam_names_list)
@@ -163,7 +163,7 @@ def storePly(path, xyz, rgb):
 def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     '''
     加载COLMAP的结果中的二进制相机外参文件imags.bin 和 内参文件cameras.bin
-        path:   GaussianModel中的源文件路径
+        path:   source_path
         images: 'images'
         eval:   是否为eval模式
         llffhold: 默认为8
@@ -203,12 +203,12 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
             sys.exit(1)
 
-    # 根据是否为评估模式（eval），将相机分为训练集和测试集
-    # 如果为评估模式，每llffhold张图片取一张作为测试集
+    # 根据是否eval，将相机分为训练集和测试集
     if eval:
         if "360" in path:
             llffhold = 8
         if llffhold:
+            # 若要评测，则每llffhold张图片取一张作为测试集
             print("------------LLFF HOLD-------------")
             cam_names = [cam_extrinsics[cam_id].name for cam_id in cam_extrinsics]
             cam_names = sorted(cam_names)
@@ -217,7 +217,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             with open(os.path.join(path, "sparse/0", "test.txt"), 'r') as file:
                 test_cam_names_list = [line.strip() for line in file]
     else:
-        # 如果不是评估模式，所有相机均为训练相机，测试相机列表为空
+        # 不评测，则所有相机均为训练相机，测试相机列表为空
         test_cam_infos = []
 
     # 存储原图片的文件夹名，默认为'images'，要从中读取图片
@@ -236,7 +236,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     # 计算场景归一化参数，这是为了处理不同尺寸和位置的场景，使模型训练更稳定
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    # 尝试读取COLMAP生成的稀疏点云数据，优先从PLY文件读取，如果不存在，则尝试从BIN或TXT文件转换并保存为PLY格式
+    # 读取COLMAP生成的稀疏点云数据，优先从PLY文件读取，如果不存在，则尝试从BIN或TXT文件转换并保存为PLY格式
     ply_path = os.path.join(path, "sparse/0/points3D.ply")
     bin_path = os.path.join(path, "sparse/0/points3D.bin")
     txt_path = os.path.join(path, "sparse/0/points3D.txt")
@@ -248,10 +248,9 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             xyz, rgb, _ = read_points3D_text(txt_path)
 
         storePly(ply_path, xyz, rgb)    # 转换成ply文件
-
+    # 读取PLY格式的稀疏点云
     try:
-        pcd = fetchPly(ply_path)    # points3D.ply读取COLMAP产生的稀疏点云
-
+        pcd = fetchPly(ply_path)
     except:
         pcd = None
 
