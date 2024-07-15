@@ -147,7 +147,7 @@ class GaussianModel:
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         """
         从稀疏点云数据pcd 初始化模型参数
-            pcd: 稀疏点云，包含点的位置和颜色
+            pcd: 输入点云，包含点的位置和颜色
             spatial_lr_scale: 位置学习率的 变化因子
         """
         # 根据scene.Scene.__init__ 以及 scene.dataset_readers.SceneInfo.nerf_normalization，即scene.dataset_readers.getNerfppNorm的代码，
@@ -155,62 +155,58 @@ class GaussianModel:
         self.spatial_lr_scale = spatial_lr_scale
 
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()  # 点云的3D位置从array转换为tensor，并放到cuda上，(N, 3)
-        # 点云的颜色从RGB array转换为tensor，放到cuda上，再转为球谐函数直流分量的系数，(N, 3)
+
+        # 点云的颜色从RGB转为球谐函数直流分量的系数 (N, 3)，因为只有点的颜色
         fused_color = RGB2SH(
             torch.tensor(np.asarray(pcd.colors)).float().cuda()
         )
-
-        # 初始化存储 球谐函数 的tensor，RGB三通道球谐的所有系数，每个通道有(max_sh_degree + 1) ** 2个球谐系数
+        # 初始化球谐函数的系数，RGB每个通道有(max_sh_degree + 1)**2 个系数
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()  # (N, 3, 16)
-        features[:, :3, 0] = fused_color  # 将RGB转换后的球谐系数C0项的系数(直流分量)存入每个3D点的直流分量球谐系数中
-        features[:, 3:, 1:] = 0.0  # 其余高阶分量系数初始化为0
+        features[:, :3, 0] = fused_color  # 将RGB转换后的球谐系数C0项的系数(直流分量)存入每个3D高斯的直流分量球谐系数中
+        features[:, 3:, 1:] = 0.0         # 其余高阶分量系数先初始化为0，后续在优化阶段再赋值
 
-        # 打印初始点的数量
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
-        # 计算点云中每个点到其最近的k个点的平均距离的 平方，用于确定高斯的尺度参数scale，且scale（的平方）不能低于1e-7
-        # distCUDA2由 submodules/simple-knn/simple_knn.cu 的 SimpleKNN::knn 函数实现，KNN意思是K-Nearest Neighbor，即求每一点最近的K个点
-        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)  # (N,)
+        # 计算点云中 每个点到其最近的k个点平均距离的平方 (N, )，用于确定高斯的缩放因子scale，且不能<1e-7
+        dist2 = torch.clamp_min(
+            distCUDA2( torch.from_numpy(np.asarray(pcd.points)).float().cuda() ), # 由submodules/simple-knn/simple_knn.cu的 SimpleKNN::knn()函数实现，KNN意思是K-Nearest Neighbor，即求每一点距其最近K个点平均距离的平方
+            0.0000001
+        )
+        # 初始化各3D高斯的 缩放因子，repeat(1, 3) 表明三个方向的初值都先设为平均距离（因dist2其实是距离的平方，所以这里要开根号；因为取值时都是经激活后的值，而scale的激活函数是exp，则这里先取对数存值
+        scales = torch.log( torch.sqrt(dist2) )[..., None].repeat(1, 3)  # (N, 3)
 
-        # 因为scale的激活函数是exp，所以这里存的也不是真的scale，而是ln(scale)。
-        # 因dist2其实是距离的平方，所以这里要开根号
-        # repeat(1, 3) 标明三个方向上scale的初始值是相等的
-        scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)  # (N, 3)
-
-        # 初始化每个点的旋转参数为单位四元数（无旋转）
+        # 初始化各3D高斯的 旋转因子 为单位四元数，且无旋转
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")  # (N, 4)
-        rots[:, 0] = 1  # 四元数的实部为1，表示无旋转
+        rots[:, 0] = 1  # 四元数[r, x, y, z]的实部为1，即旋转角度=2arccos(1)，无旋转
 
-        # 初始化每个点的不透明度在sigmoid前的值为0.1，inverse_sigmoid是sigmoid的反函数，等于ln(x / (1 - x))。
-        # 不透明度存储的时候要取其经历sigmoid前的值，inverse_sigmoid(0.1) = -2.197
-        opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))    # (N, 1)
+        # 初始化各3D高斯的 不透明度为0.1 (N, 1)（不透明度的激活函数是sigmoid，所以先取逆对数存值，inverse_sigmoid(0.1) = -2.197）
+        opacities = inverse_sigmoid(0.1 * torch.ones( (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda" ))  # (N, 1)
 
-        # 将以上计算的参数设置为模型的可训练参数
-        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))  # 高斯椭球体中心位置坐标，(N, 3)
-        self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))  # RGB三个通道球谐系数的直流分量（C0项），(N, 3, 1)
-        self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))  # RGB三个通道球谐系数的高阶分量，(N, 3, (最大球谐阶数 + 1)² - 1)
-        self._scaling = nn.Parameter(scales.requires_grad_(True))  # 尺度(N, 3)
-        self._rotation = nn.Parameter(rots.requires_grad_(True))  # 旋转四元数(N, 4)
-        self._opacity = nn.Parameter(opacities.requires_grad_(True))  # 不透明度（经过sigmoid之前），(N, 1)
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 存储2D投影的最大半径，初始化为0，大小为(N,)
+        # 将以上需计算的参数设置为模型的可训练参数
+        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))  # 各3D高斯的中心位置，(N, 3)
+        self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))     # 球谐函数直流分量的系数，(N, 3, 1)
+        self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))    # 球谐函数高阶分量的系数，(N, 3, (最大球谐阶数 + 1)² - 1)
+        self._scaling = nn.Parameter(scales.requires_grad_(True))   # 缩放因子，(N, 3)
+        self._rotation = nn.Parameter(rots.requires_grad_(True))    # 单位旋转四元数，(N, 4)
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))  # 不透明度，(N, 1)
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 各3D高斯投影到二维的最大半径，初始化为0，(N, )
 
     def training_setup(self, training_args):
         """
-        设置训练参数，包括初始化用于累积梯度的变量，配置优化器，以及创建学习率调度器
-        :param training_args: 包含训练相关参数的对象
+        初始设置训练参数，包括初始化用于累积梯度的变量，配置优化器，以及创建位置学习率调整器
+            training_args: 包含优化相关参数的对象
         """
-        # 设置在训练过程中，用于密集化处理的3D高斯点的比例
-        # 控制Gaussian的密度，在`densify_and_clone`中被使用
+        # 在训练过程中，用于控制3D高斯的密度，在`densify_and_clone`中被使用
         self.percent_dense = training_args.percent_dense
 
-        # 初始化用于累积3D高斯中心点位置梯度的张量，用于之后判断是否需要对3D高斯进行克隆或切分
+        # 初始化 累积3D高斯中心点位置梯度的张量，用于之后判断是否需要对3D高斯进行克隆或切分
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")  # 坐标的累积梯度
 
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")  # 意义不明
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")  # 梯度累积的次数，用于计算每个高斯体的平均梯度时需除以它
 
         # 配置各参数的优化器，包括指定参数、学习率和参数名称
         l = [
-            {"params": [self._xyz], "lr": training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+            {"params": [self._xyz], "lr": training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},    # 各3D高斯的位置学习率的 变化因子，位置的学习率乘以它，以抵消在不同尺度下应用同一个学习率带来的问题
             {"params": [self._features_dc], "lr": training_args.feature_lr, "name": "f_dc"},
             {"params": [self._features_rest], "lr": training_args.feature_lr / 20.0, "name": "f_rest"},
             {"params": [self._opacity], "lr": training_args.opacity_lr, "name": "opacity"},
@@ -218,23 +214,23 @@ class GaussianModel:
             {"params": [self._rotation], "lr": training_args.rotation_lr, "name": "rotation"},
         ]
 
-        # 创建优化器，这里使用Adam优化器
+        # 创建优化器，这里使用Adam优化器，初始学习率为0
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        # 创建学习率调度器，用于对中心点位置的学习率进行调整
+
+        # 创建一个位置学习率调整器，用于调整各3D高斯位置的学习率
         self.xyz_scheduler_args = get_expon_lr_func(
             lr_init=training_args.position_lr_init * self.spatial_lr_scale,
             lr_final=training_args.position_lr_final * self.spatial_lr_scale,
-            lr_delay_mult=training_args.position_lr_delay_mult,
-            max_steps=training_args.position_lr_max_steps,
+            lr_delay_mult=training_args.position_lr_delay_mult, #
+            max_steps=training_args.position_lr_max_steps,      #
         )
 
 
     def update_learning_rate(self, iteration):
-        # 更新Gaussian坐标的学习率
-        ''' Learning rate scheduling per step '''
+        # 每次迭代都更新3D高斯的位置学习率
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
+                lr = self.xyz_scheduler_args(iteration) # 调整学习率
                 param_group["lr"] = lr
                 return lr
 
