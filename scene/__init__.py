@@ -48,7 +48,7 @@ class Scene:
         self.train_cameras = {} # 用于训练的相机
         self.test_cameras = {}  # 用于测试的相机
 
-        # 2. 从COLMAP或Blender的输出结果中构建 scene_info（包含 点云、train相机info、test相机info、场景归一化参数、点云文件路径）
+        # 2. 从COLMAP或Blender的输出结果中加载 scene_info（包含 点云、train相机info、test相机info、场景归一化参数、点云文件路径）
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
@@ -84,7 +84,7 @@ class Scene:
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
-        # 4. 调整图片分辨率，并根据train、test相机info(包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height)创建相机
+        # 4. 调整图片分辨率，并根据train、test相机info(包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height)创建 相机
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, False)
