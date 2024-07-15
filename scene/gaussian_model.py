@@ -34,8 +34,8 @@ class GaussianModel:
             """
             从 缩放因子、旋转四元数 构建 各3D高斯体的 协方差矩阵
             """
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)  # 从缩放因子、旋转四元数 计算 旋转-缩放矩阵（反映高斯体的变化），N 3 3
-            actual_covariance = L @ L.transpose(1, 2)  # 计算实际的 协方差矩阵
+            L = build_scaling_rotation(scaling_modifier * scaling, rotation)  # 从缩放因子、旋转四元数 计算RS矩阵（反映高斯体的变化），N 3 3
+            actual_covariance = L @ L.transpose(1, 2)  # 计算实际的 协方差矩阵 R S S^T R^T
             symm = strip_symmetric(actual_covariance)  # 提取上半对角元素
             return symm
 
