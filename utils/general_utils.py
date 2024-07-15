@@ -32,47 +32,32 @@ def PILtoTorch(pil_image, resolution):
 
 def get_expon_lr_func(lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000):
     """
-    Copied from Plenoxels
-
-    Continuous learning rate decay function. Adapted from JaxNeRF
-    The returned rate is lr_init when step=0 and lr_final when step=max_steps, and
-    is log-linearly interpolated elsewhere (equivalent to exponential decay).
-    If lr_delay_steps>0 then the learning rate will be scaled by some smooth
-    function of lr_delay_mult, such that the initial learning rate is
-    lr_init*lr_delay_mult at the beginning of optimization but will be eased back
-    to the normal learning rate when steps>lr_delay_steps.
-    :param conf: config subtree 'lr' or similar
-    :param max_steps: int, the number of steps during optimization.
-    :return HoF which takes step as input
-    """
-    """
-    创建一个学习率调度函数，该函数根据训练进度动态调整学习率
-
-    :param lr_init: 初始学习率
-    :param lr_final: 最终学习率
-    :param lr_delay_steps: 学习率延迟步数，在这些步数内学习率将被降低
-    :param lr_delay_mult: 学习率延迟乘数，用于计算初始延迟学习率
-    :param max_steps: 最大步数，用于规范化训练进度
-    :return: 一个函数，根据当前步数返回调整后的学习率
+    位置学习率调整器，返回helper(step)函数，根据训练进度动态调整学习率。step=0返回lr_init，step=max返回lr_final，其余步数使用对数线性插值（指数衰减）
+        lr_init:    初始学习率
+        lr_final:   最终学习率
+        lr_delay_steps: 学习率延迟步数，若>0，则学习率将被lr_delay_mult的平滑函数缩放，使得lr_init在优化开始时为lr_init * lr_delay_mult；当step>lr_delay_steps时，学习率将被缓慢恢复到正常学习率
+        lr_delay_mult:  学习率延迟乘数，用于计算初始延迟学习率
+        max_steps:  调整学习率所需的最大步数
+        return: 根据当前步数返回调整后的学习率
     """
 
     def helper(step):
-        # 如果步数小于0或学习率为0，直接返回0，表示不进行优化
         if step < 0 or (lr_init == 0.0 and lr_final == 0.0):
-            # Disable this parameter
+            # 当前步数<0 或 学习率为0，直接返回0，表示不优化该参数
             return 0.0
-        # 如果设置了学习率延迟步数，计算延迟调整后的学习率
         if lr_delay_steps > 0:
-            # A kind of reverse cosine decay.
-            delay_rate = lr_delay_mult + (1 - lr_delay_mult) * np.sin(
-                0.5 * np.pi * np.clip(step / lr_delay_steps, 0, 1)
+            # 设置了学习率延迟步数，则计算 延迟调整后的学习率，帮助在训练开始时使用较小的学习率,然后逐步恢复到正常水平,从而提高模型收敛的稳定性
+            delay_rate = (
+                    lr_delay_mult +
+                    (1 - lr_delay_mult) * np.sin(0.5 * np.pi * np.clip(step / lr_delay_steps, 0, 1))
             )
         else:
             delay_rate = 1.0
+
         # 根据步数计算学习率的对数线性插值，实现从初始学习率到最终学习率的平滑过渡
-        t = np.clip(step / max_steps, 0, 1)
-        log_lerp = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
-        # 返回调整后的学习率
+        t = np.clip(step / max_steps, 0, 1) # 当前步数占总步数的比例
+        log_lerp = np.exp( np.log(lr_init) * (1 - t) + np.log(lr_final) * t )   # 对数线性插值（指数衰减）
+
         return delay_rate * log_lerp
 
     return helper
@@ -108,6 +93,13 @@ def strip_symmetric(sym):
 def build_rotation(r):
     """
     旋转四元数 -> 单位化 -> 3x3的旋转矩阵
+
+    对于三维向量v，通过 四元数q = [r, x, y, z] (x, y, z为旋转轴的方向，2arccos(r)为要旋转的角度；q^-1 = q^* = [r, -x, -y, -z]) 得到的旋转结果为:
+    v' = q v q^-1
+       = R v
+       = [ 1-2(y^2+z^2)  2(xy - rz)    2(xz + ry)   ]
+         [ 2(xy + rz)    1-2(x^2+z^2)  2(yz - rx)   ] v
+         [ 2(xz - ry)    2(yz + rx)    1-2(x^2+y^2) ]
     """
     norm = torch.sqrt(r[:, 0] * r[:, 0] + r[:, 1] * r[:, 1] + r[:, 2] * r[:, 2] + r[:, 3] * r[:, 3])
 

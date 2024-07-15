@@ -56,24 +56,22 @@ C4 = [
 
 def eval_sh(deg, sh, dirs):
     """
-    Evaluate spherical harmonics at unit directions
-    using hardcoded SH polynomials.
-    Works with torch/np/jnp.
-    ... Can be 0 or more batch dimensions.
-    Args:
+    改变球谐函数 基函数的系数、方向值θ、φ 控制高斯体的颜色
         deg: 球谐函数的 阶数，这里可能为 0-3
         sh:  球谐函数的 系数 [..., C, (deg + 1) ** 2]
-        dirs: 方向值 jnp.ndarray unit directions [..., 3]
-    Returns:
-        [..., C]
+        dirs: 单位方向，可以兼容torch/np/jnp，其中jnp.ndarray的单位方向为[..., 3]
     """
-    assert deg <= 4 and deg >= 0
-    coeff = (deg + 1) ** 2  # 球谐函数当前阶数要求的系数 个数
+    assert deg <= 4 and deg >= 0    # 规定阶数范围为 [0, 4]
+    coeff = (deg + 1) ** 2          # 计算球谐函数当前阶数的 系数数量
     assert sh.shape[-1] >= coeff
 
+    # 基函数 * 系数 = 最终的球谐函数
     result = C0 * sh[..., 0]
     if deg > 0:
+        # 计算单位方向向量
+        # x = sinθ·cosφ, y = sinθ·sinφ, z = cosθ
         x, y, z = dirs[..., 0:1], dirs[..., 1:2], dirs[..., 2:3]
+        # 计算1阶球谐函数
         result = (result -
                 C1 * y * sh[..., 1] +
                 C1 * z * sh[..., 2] -
@@ -115,7 +113,7 @@ def RGB2SH(rgb):
     """
     将RGB颜色值 转换为 球谐系数直流分量的系数
         rgb: RGB颜色值
-        C0：球谐函数直流分量的值，sqrt(1 / (4*pi))，是0阶的球谐函数，即直流分量Y(l=0,m=0)的值
+        C0：球谐函数直流分量的基函数，sqrt(1 / (4*pi))，即直流分量Y(阶数l=0, 次数m=0)的值
     """
     return (rgb - 0.5) / C0
 
