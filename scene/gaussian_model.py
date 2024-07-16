@@ -204,12 +204,12 @@ class GaussianModel:
         )
 
         # 将以上需计算的参数设置为模型的可训练参数
-        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))  # 各3D高斯的中心位置，(N, 3)
+        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))    # 各3D高斯的中心位置，(N, 3)
         self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))     # 球谐函数直流分量的系数，(N, 3, 1)
         self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))    # 球谐函数高阶分量的系数，(N, 3, (最大球谐阶数 + 1)² - 1)
-        self._scaling = nn.Parameter(scales.requires_grad_(True))   # 缩放因子，(N, 3)
-        self._rotation = nn.Parameter(rots.requires_grad_(True))    # 单位旋转四元数，(N, 4)
-        self._opacity = nn.Parameter(opacities.requires_grad_(True))  # 不透明度，(N, 1)
+        self._scaling = nn.Parameter(scales.requires_grad_(True))       # 缩放因子，(N, 3)
+        self._rotation = nn.Parameter(rots.requires_grad_(True))        # 单位旋转四元数，(N, 4)
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))    # 不透明度，(N, 1)
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 各3D高斯投影到二维的最大半径，初始化为0，(N, )
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
@@ -269,51 +269,59 @@ class GaussianModel:
                 param_group["lr"] = lr
                 return lr
 
-    # 模型被保存到了/point_cloud/iteration_xxx/point_cloud.ply文件中，使用PlyData.read()读取，其第一个属性，即vertex的信息为：x', 'y', 'z', 'nx', 'ny', 'nz', 3个'f_dc_x', 45个'f_rest_xx', 'opacity', 3个'scale_x', 4个'rot_x'
     def construct_list_of_attributes(self):
-        # 构建ply文件的键列表
-        l = ["x", "y", "z", "nx", "ny", "nz"]  # 不知道nx，ny,nz的用处
-        # All channels except the 3 DC
-        for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):  # self._features_dc: (N, 3, 1)
+        """
+        构建ply文件的key列表
+        模型被保存为一个.ply文件，使用PlyData.read()读取，其第一个属性，即vertex的信息为：'x', 'y', 'z', 'nx', 'ny', 'nz', 3*1个'f_dc_x', 3*15个'f_rest_xx', 'opacity', 3个'scale_x', 4个'rot_x'
+        """
+        l = ["x", "y", "z", "nx", "ny", "nz"]  # 添加位置、法向量（法向量这里实际没有用到，全为0）
+        for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):        # 添加球谐函数直流分量的系数 3 * 1
             l.append("f_dc_{}".format(i))
-        for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):  # self._features_rest: (N, 3, (最大球谐阶数 + 1)² - 1)
+        for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):    # 添加球谐函数高阶分量的系数 3 * 15
             l.append("f_rest_{}".format(i))
-        l.append("opacity")
-        for i in range(self._scaling.shape[1]):  # shape[1]: 3
+        l.append("opacity") # 添加不透明度
+        for i in range(self._scaling.shape[1]):     # 添加缩放 3
             l.append("scale_{}".format(i))
-        for i in range(self._rotation.shape[1]):  # shape[1]: 4
+        for i in range(self._rotation.shape[1]):    # 添加旋转四元数 4
             l.append("rot_{}".format(i))
         return l
 
     def save_ply(self, path):
+        """
+        保存模型为ply文件
+        """
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
-        normals = np.zeros_like(xyz)  # # nx, ny, nz；全是0，不知何用
-        f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        opacities = self._opacity.detach().cpu().numpy()
-        scale = self._scaling.detach().cpu().numpy()
-        rotation = self._rotation.detach().cpu().numpy()
+        normals = np.zeros_like(xyz)    # nx, ny, nz在保存时全为0，实际未用到
+        f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()   # N 1 3 => N 3 1 => N 3
+        f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()   # N 15 3 => N 3 15 => N 45
+        opacities = self._opacity.detach().cpu().numpy()    # N 1
+        scale = self._scaling.detach().cpu().numpy()        # N 3
+        rotation = self._rotation.detach().cpu().numpy()    # N 4
 
-        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes()]
-
+        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes()]   # 遍历key，即要存储的参数名字，其value的类型设为float32
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        # 所有要保存的值合并成一个大数组
+
+        # 所有要保存的参数concatenate成一个大数组
         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
 
     def reset_opacity(self):
-        # get_opacity返回了经过exp的不透明度，是真的不透明度
-        # 这句话让所有不透明度都不能超过0.01
+        """
+        重置不透明度，让所有3D高斯的不透明度都 < 0.01
+        """
+        # 取当前各3D高斯的不透明度 和 0.01的最小值（get_opacity返回的是经sigmod激活后的不透明度，后需经过反函数）
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01))
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")      # 更新优化器中的不透明度
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")  # 更新优化器中的不透明度
         self._opacity = optimizable_tensors["opacity"]
 
     def load_ply(self, path, use_train_test_exp = False):
-        # 读取ply文件并把数据转换成torch.nn.Parameter等待优化
+        """
+        读取ply文件，并把数据转换成torch.nn.Parameter等待优化
+        """
         plydata = PlyData.read(path)
         if use_train_test_exp:
             exposure_file = os.path.join(os.path.dirname(path), os.pardir, os.pardir, "exposure.json")
@@ -338,15 +346,15 @@ class GaussianModel:
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
-
+        # 读取球谐函数高阶分量的系数
         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
         assert len(extra_f_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3
-        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
-        for idx, attr_name in enumerate(extra_f_names):
+        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))   # N 3*15
+        for idx, attr_name in enumerate(extra_f_names): # 遍历f_rest_x
             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
-        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
+        # Reshape (P, F*SH_coeffs) to (P, F, SH_coeffs except DC)
+        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))    # N 3 15
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
@@ -361,8 +369,8 @@ class GaussianModel:
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
         self._xyz = nn.Parameter(torch.tensor(xyz, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
-        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_dc = nn.Parameter(torch.tensor(features_dc, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))     # N 3 1 => N 1 3
+        self._features_rest = nn.Parameter(torch.tensor(features_extra, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))    # N 3 15 => N 15 3
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
@@ -370,8 +378,10 @@ class GaussianModel:
         self.active_sh_degree = self.max_sh_degree
 
     def replace_tensor_to_optimizer(self, tensor, name):
-        # 看样子是把优化器保存的某个名为`name`的参数的值强行替换为`tensor`
-        # 这里面需要注意的是修改Adam优化器的状态变量：动量（momentum）和平方动量（second-order momentum）
+        """
+        将优化器保存的某个名为`name`的参数的值强行替换为`tensor`
+        这里面需要注意的是修改Adam优化器的状态变量：动量（momentum）和平方动量（second-order momentum）
+        """
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
