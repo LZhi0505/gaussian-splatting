@@ -82,6 +82,7 @@ class Scene:
             random.shuffle(scene_info.train_cameras)  # Multi-res consistent random shuffling
             random.shuffle(scene_info.test_cameras)  # Multi-res consistent random shuffling
 
+        # 所有train相机到它们的中心点的 最大距离 * 1.1
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
         # 4. 调整图片分辨率，并根据train、test相机info(包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height)创建 相机

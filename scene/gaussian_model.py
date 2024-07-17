@@ -205,8 +205,8 @@ class GaussianModel:
 
         # 将以上需计算的参数设置为模型的可训练参数
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))    # 各3D高斯的中心位置，(N, 3)
-        self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))     # 球谐函数直流分量的系数，(N, 3, 1)
-        self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))    # 球谐函数高阶分量的系数，(N, 3, (最大球谐阶数 + 1)² - 1)
+        self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))     # 球谐函数直流分量的系数，(N, 1, 3)
+        self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))    # 球谐函数高阶分量的系数，(N, (最大球谐阶数 + 1)² - 1, 3)
         self._scaling = nn.Parameter(scales.requires_grad_(True))       # 缩放因子，(N, 3)
         self._rotation = nn.Parameter(rots.requires_grad_(True))        # 单位旋转四元数，(N, 4)
         self._opacity = nn.Parameter(opacities.requires_grad_(True))    # 不透明度，(N, 1)
@@ -275,14 +275,14 @@ class GaussianModel:
         模型被保存为一个.ply文件，使用PlyData.read()读取，其第一个属性，即vertex的信息为：'x', 'y', 'z', 'nx', 'ny', 'nz', 3*1个'f_dc_x', 3*15个'f_rest_xx', 'opacity', 3个'scale_x', 4个'rot_x'
         """
         l = ["x", "y", "z", "nx", "ny", "nz"]  # 添加位置、法向量（法向量这里实际没有用到，全为0）
-        for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):        # 添加球谐函数直流分量的系数 3 * 1
+        for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):        # 添加球谐函数直流分量的系数，3 * 1
             l.append("f_dc_{}".format(i))
-        for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):    # 添加球谐函数高阶分量的系数 3 * 15
+        for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):    # 添加球谐函数高阶分量的系数，3 * 15
             l.append("f_rest_{}".format(i))
-        l.append("opacity") # 添加不透明度
-        for i in range(self._scaling.shape[1]):     # 添加缩放 3
+        l.append("opacity") # 添加不透明度，1
+        for i in range(self._scaling.shape[1]):     # 添加缩放，3
             l.append("scale_{}".format(i))
-        for i in range(self._rotation.shape[1]):    # 添加旋转四元数 4
+        for i in range(self._rotation.shape[1]):    # 添加旋转四元数，4
             l.append("rot_{}".format(i))
         return l
 
@@ -300,12 +300,11 @@ class GaussianModel:
         scale = self._scaling.detach().cpu().numpy()        # N 3
         rotation = self._rotation.detach().cpu().numpy()    # N 4
 
-        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes()]   # 遍历key，即要存储的参数名字，其value的类型设为float32
-        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes()]   # 遍历参数名称，创建一个元组，key为参数名，value为字符串"f4"，表示float32数据类型
+        elements = np.empty(xyz.shape[0], dtype=dtype_full) # 创建一个空的 结构化数组 存储所有参数，(N,)
 
-        # 所有要保存的参数concatenate成一个大数组
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
-        elements[:] = list(map(tuple, attributes))
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)   # 所有要保存的参数数据先concatenate，(N, x)
+        elements[:] = list(map(tuple, attributes))  # map：将每一行即每个3DGS的各参数数据转换为一个元组，list的每个元素为元组形式存储的一个3DGS的各参数数据
         el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
 
@@ -314,9 +313,9 @@ class GaussianModel:
         重置不透明度，让所有3D高斯的不透明度都 < 0.01
         """
         # 取当前各3D高斯的不透明度 和 0.01的最小值（get_opacity返回的是经sigmod激活后的不透明度，后需经过反函数）
-        opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01))
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")  # 更新优化器中的不透明度
-        self._opacity = optimizable_tensors["opacity"]
+        opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01))  # N 1
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")  # 更新优化器中的不透明度，返回的是一个字典中，key："opacity"，value：可计算梯度的、参数化的新不透明度
+        self._opacity = optimizable_tensors["opacity"]  # 存储新不透明度值
 
     def load_ply(self, path, use_train_test_exp = False):
         """
@@ -333,35 +332,37 @@ class GaussianModel:
             else:
                 print(f"No exposure to be loaded at {exposure_file}")
                 self.pretrained_exposures = None
-
+        # N 3
         xyz = np.stack(
             (np.asarray(plydata.elements[0]["x"]),
                 np.asarray(plydata.elements[0]["y"]),
                 np.asarray(plydata.elements[0]["z"])),
             axis=1
         )
-        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+        opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis] # N 1
 
-        features_dc = np.zeros((xyz.shape[0], 3, 1))
+        features_dc = np.zeros((xyz.shape[0], 3, 1))    # N 3 1
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
         # 读取球谐函数高阶分量的系数
-        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
+        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]    # 先获取参数名，3*15个
         extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
-        assert len(extra_f_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3
+        assert len(extra_f_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3  # (3 * 16) - 3
         features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))   # N 3*15
-        for idx, attr_name in enumerate(extra_f_names): # 遍历f_rest_x
+        # 将高阶份量系数存储到features_extra中
+        for idx, attr_name in enumerate(extra_f_names):
             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
         # Reshape (P, F*SH_coeffs) to (P, F, SH_coeffs except DC)
         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))    # N 3 15
 
+        # 读取缩放因子
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
-        scales = np.zeros((xyz.shape[0], len(scale_names)))
+        scales = np.zeros((xyz.shape[0], len(scale_names))) # N 3
         for idx, attr_name in enumerate(scale_names):
             scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
+        # 读取旋转四元数
         rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
         rot_names = sorted(rot_names, key=lambda x: int(x.split("_")[-1]))
         rots = np.zeros((xyz.shape[0], len(rot_names)))
@@ -375,29 +376,32 @@ class GaussianModel:
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
 
-        self.active_sh_degree = self.max_sh_degree
+        self.active_sh_degree = self.max_sh_degree  # 设置当前球谐函数的阶数
 
     def replace_tensor_to_optimizer(self, tensor, name):
         """
-        将优化器保存的某个名为`name`的参数的值强行替换为`tensor`
-        这里面需要注意的是修改Adam优化器的状态变量：动量（momentum）和平方动量（second-order momentum）
+        将优化器保存的名为`name`的参数的值 强行替换为 传入的`tensor`，同时重置Adam优化器对应参数的状态变量：动量、平方动量（确保该参数新的值从一个干净的状态开始，不受之前优化路径的影响，确保优化过程的稳定性和收敛速度）
         """
-        optimizable_tensors = {}
+        optimizable_tensors = {}    # 存储新的优化参数及对应数据
+        # 遍历优化器的所有参数组
         for group in self.optimizer.param_groups:
             if group["name"] == name:
-                stored_state = self.optimizer.state.get(group["params"][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(tensor)  # 把动量清零
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)  # 把平方动量清零
+                # 当前参数组的名称 == 要修改的参数名称
+                stored_state = self.optimizer.state.get(group["params"][0], None)   # 获取当前参数名对应数据group["params"][0]的 状态
+                stored_state["exp_avg"] = torch.zeros_like(tensor)      # 将动量清零
+                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)   # 将平方动量清零
 
-                del self.optimizer.state[group["params"][0]]
-                group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group["params"][0]] = stored_state
+                del self.optimizer.state[group["params"][0]]    # 删除优化器中当前参数名对应旧数据的状态
+                group["params"][0] = nn.Parameter(tensor.requires_grad_(True))  # 旧数据替换为 输入的新数据，并设置为可计算梯度
+                self.optimizer.state[group["params"][0]] = stored_state # 将暂存的、动量清零的旧数据的状态 重新分配给 优化器中的新数据
 
-                optimizable_tensors[group["name"]] = group["params"][0]
+                optimizable_tensors[group["name"]] = group["params"][0] # 将新的参数数据存储在optimizable_tensors字典中，key：参数名，value：可计算梯度的新数据
         return optimizable_tensors
 
     def _prune_optimizer(self, mask):
-        # 根据`mask`裁剪一部分参数及其动量和二阶动量
+        """
+        根据输入的`mask`裁剪一部分参数及其动量和二阶动量
+        """
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             stored_state = self.optimizer.state.get(group["params"][0], None)
@@ -416,7 +420,10 @@ class GaussianModel:
         return optimizable_tensors
 
     def prune_points(self, mask):
-        # 删除Gaussian并移除对应的所有属性
+        """
+        删除Gaussian并移除对应的所有属性
+        """
+        #
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
@@ -529,10 +536,10 @@ class GaussianModel:
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         """
-            max_grad    决定是否应基于 2D 位置梯度对点进行densification的限制，默认为0.0002
-            min_opacity 0.005
-            extent
-            max_screen_size 初始为None，3000代后，即后续重置不透明度，则为20
+            max_grad：       梯度阈值，决定是否应基于 2D 位置梯度对点进行增稠的限制，默认为0.0002
+            min_opacity：    最小不透明度，0.005
+            extent：         所有train相机到它们的中心点的 最大距离 * 1.1
+            max_screen_size：    3000代前为None；3000代后，也是在第一次重置不透明度前夕，为20
         """
         grads = self.xyz_gradient_accum / self.denom    # 计算平均梯度
         grads[grads.isnan()] = 0.0
