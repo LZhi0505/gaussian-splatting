@@ -182,7 +182,7 @@ class GaussianModel:
         # 初始化球谐函数的系数，RGB每个通道有(max_sh_degree + 1)**2 个系数
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()  # (N, 3, 16)
         features[:, :3, 0] = fused_color  # 将RGB转换后的球谐系数C0项的系数(直流分量)存入每个3D高斯的直流分量球谐系数中
-        features[:, 3:, 1:] = 0.0         # 其余高阶分量系数先初始化为0，后续在优化阶段再赋值
+        features[:, :3, 1:] = 0.0         # 其余高阶分量系数先初始化为0，后续在优化阶段再赋值
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
