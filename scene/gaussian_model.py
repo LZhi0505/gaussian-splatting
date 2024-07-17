@@ -146,7 +146,7 @@ class GaussianModel:
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         """
-        从稀疏点云数据pcd 初始化模型参数
+        从输入点云创建3D高斯，初始化各3D高斯的参数
             pcd: 输入点云，包含点的位置和颜色
             spatial_lr_scale: 位置学习率的 变化因子
         """
@@ -177,10 +177,10 @@ class GaussianModel:
 
         # 初始化各3D高斯的 旋转因子 为单位四元数，且无旋转
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")  # (N, 4)
-        rots[:, 0] = 1  # 四元数[r, x, y, z]的实部为1，即旋转角度=2arccos(1)，无旋转
+        rots[:, 0] = 1  # 四元数[r, x, y, z]的实部为1，则旋转角度为2arccos(1)，表示无旋转
 
-        # 初始化各3D高斯的 不透明度为0.1 (N, 1)（不透明度的激活函数是sigmoid，所以先取逆对数存值，inverse_sigmoid(0.1) = -2.197）
-        opacities = inverse_sigmoid(0.1 * torch.ones( (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda" ))  # (N, 1)
+        # 初始化各3D高斯的 不透明度为0.1，(N, 1)（不透明度的激活函数是sigmoid，所以先取逆对数存值，inverse_sigmoid(0.1) = -2.197）
+        opacities = inverse_sigmoid(0.1 * torch.ones( (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda" ))
 
         # 将以上需计算的参数设置为模型的可训练参数
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))    # 各3D高斯的中心位置，(N, 3)
