@@ -142,17 +142,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            # < 15000代，则对3D高斯模型进行增密和修剪，Densification
             if iteration < opt.densify_until_iter:
+                # < 15000代，则对3D高斯模型进行增稠和修剪
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                # > 500 且 每100代增稠，则进行 增稠和剪枝
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None # 初始为None，3000代后，即后续重置不透明度，则为20
+                    # 500 < iteration < 15_000， 每100代进行增稠和剪枝
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None # 3000代前为None；3000代后，也是在第一次重置不透明度前，为20
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
 
-                # 每3000代 或 (白背景 且 为第500代)，则重置不透明度
+                # 每3000代 或 (白背景 且 为第500代)，则重置所有3DGS的不透明度（ < 0.01）
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 

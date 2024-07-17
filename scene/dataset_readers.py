@@ -43,25 +43,28 @@ class SceneInfo(NamedTuple):
     ply_path: str
 
 def getNerfppNorm(cam_info):
+    """
+    计算所有相机的 中心点坐标、所有相机到该点的最大距离
+    """
     def get_center_and_diag(cam_centers):
         cam_centers = np.hstack(cam_centers)
-        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)
+        avg_cam_center = np.mean(cam_centers, axis=1, keepdims=True)    # 计算所有train相机的 中心点
         center = avg_cam_center
-        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)
-        diagonal = np.max(dist)
+        dist = np.linalg.norm(cam_centers - center, axis=0, keepdims=True)  # 计算每个相机到中心点的 距离
+        diagonal = np.max(dist) # 距离的最大值
         return center.flatten(), diagonal
 
     cam_centers = []
-
+    # 遍历所有相机信息，获取中心坐标
     for cam in cam_info:
-        W2C = getWorld2View2(cam.R, cam.T)
+        W2C = getWorld2View2(cam.R, cam.T)  # 计算W2C的变换矩阵
         C2W = np.linalg.inv(W2C)
-        cam_centers.append(C2W[:3, 3:4])
+        cam_centers.append(C2W[:3, 3:4])    # 获取相机的中心坐标（Twc的平移向量）
 
-    center, diagonal = get_center_and_diag(cam_centers)
-    radius = diagonal * 1.1
+    center, diagonal = get_center_and_diag(cam_centers) # 计算所有相机的 中心点、所有相机到该点的最大半径
+    radius = diagonal * 1.1 # 最终的半径 = 最大半径 * 1.1
 
-    translate = -center
+    translate = -center # 所有相机的 中心点 的tcw
 
     return {"translate": translate, "radius": radius}
 
@@ -187,7 +190,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         train_cam_infos = cam_infos
         test_cam_infos = []
 
-    # 计算场景归一化参数，这是为了处理不同尺寸和位置的场景，使模型训练更稳定
+    # 计算所有train相机的 中心点的tcw（"translate"），以及所有train相机到该点最大距离的1.1倍（"radius"）
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
     # 读取COLMAP生成的稀疏点云数据，优先从PLY文件读取，如果不存在，则尝试从BIN或TXT文件转换并保存为PLY格式
