@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -18,18 +18,20 @@ from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 
+
 class Scene:
     """
     Scene 类用于管理场景的3D模型，包括相机参数、点云数据和高斯模型的初始化和加载
     """
-    gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    gaussians: GaussianModel
+
+    def __init__(self, args: ModelParams, gaussians: GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
         """
-        初始化3D场景对象
+        初始化3D场景对象，加载场景info，创建train和test相机，调整gt图像的分辨率，从稀疏点云初始化3D高斯或直接加载指定的3D高斯
             args: 存储着与 GaussianMoedl 相关参数 的args，即包含scene/__init__.py/ModelParams()中的参数
-            gaussians: 3D高斯模型对象，用于场景点的3D表示
-            load_iteration: 训练时为 None，render时为 指定的iteration：如果是-1，则在输出文件夹下的point_cloud/文件夹下搜索迭代次数最大的模型；如果不是None且不是-1，则加载指定迭代次数的
+            gaussians: 3D高斯模型对象
+            load_iteration: 训练时为 None，render时为 指定的模型迭代次数：如果是-1，则在输出文件夹下的point_cloud/文件夹下搜索迭代次数最大的模型；如果不是None且不是-1，则加载指定迭代次数的
             shuffle: 是否在训练前打乱相机列表（render.py中会设为False）
             resolution_scales: 分辨率比例列表，用于处理不同分辨率的相机
         """
@@ -39,13 +41,13 @@ class Scene:
 
         # 1. 如果指定了加载模型的迭代次数，则赋给Scene.loaded_iter
         if load_iteration:
-            if load_iteration == -1:    # 是-1，则在输出文件夹下的point_cloud/文件夹下搜索迭代次数最大的模型，记录最大迭代次数
+            if load_iteration == -1:  # 是-1，则在输出文件夹下的point_cloud/文件夹下搜索迭代次数最大的模型，记录最大迭代次数
                 self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud"))
-            else:   # 不是None且不是-1，则加载指定迭代次数的
+            else:  # 不是None且不是-1，则加载指定迭代次数的
                 self.loaded_iter = load_iteration
             print("Loading trained model at iteration {}".format(self.loaded_iter))
 
-        self.train_cameras = {} # 用于训练的相机
+        self.train_cameras = {}  # 用于训练的相机
         self.test_cameras = {}  # 用于测试的相机
 
         # 2. 从COLMAP或Blender的输出结果中加载 scene_info（包含 点云、train相机info、test相机info、场景归一化参数、点云文件路径）
@@ -60,21 +62,21 @@ class Scene:
         if not self.loaded_iter:
             # 未加载已训练模型，则：
             # (1) 将点云文件point3D.ply文件复制到input.ply文件
-            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+            with open(scene_info.ply_path, "rb") as src_file, open(os.path.join(self.model_path, "input.ply"), "wb") as dest_file:
                 dest_file.write(src_file.read())
 
             # (2) 将相机参数写入cameras.json文件
             json_cams = []
             camlist = []
-            if scene_info.test_cameras:     # 添加test相机到 camlist 中
+            if scene_info.test_cameras:  # 添加test相机到 camlist 中
                 camlist.extend(scene_info.test_cameras)
-            if scene_info.train_cameras:    # 添加train相机到 camlist 中
+            if scene_info.train_cameras:  # 添加train相机到 camlist 中
                 camlist.extend(scene_info.train_cameras)
 
-            # 遍历 camlist 中的所有训练和测试相机,使用 camera_to_JSON 函数将每个相机转换为 JSON 格式,并添加到 json_cams 列表中，并将 json_cams 写入 cameras.json 文件中
+            # 遍历 camlist 中的所有train和test相机,使用 camera_to_JSON 函数将每个相机转换为 JSON 格式,并添加到 json_cams 列表中，并将 json_cams 写入 cameras.json 文件中
             for id, cam in enumerate(camlist):
                 json_cams.append(camera_to_JSON(id, cam))
-            with open(os.path.join(self.model_path, "cameras.json"), 'w') as file:
+            with open(os.path.join(self.model_path, "cameras.json"), "w") as file:
                 json.dump(json_cams, file)
 
         if shuffle:
@@ -105,8 +107,8 @@ class Scene:
 
     def save(self, iteration):
         """
-        保存当前迭代下的3D高斯模型点云。
-        iteration: 当前的迭代次数
+        保存当前迭代次数下的3D高斯模型为ply文件
+            iteration: 当前迭代次数
         """
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
@@ -114,8 +116,7 @@ class Scene:
     def getTrainCameras(self, scale=1.0):
         """
         获取指定分辨率比例的训练相机列表
-        scale: 分辨率比例
-        return: 指定分辨率比例的训练相机列表
+            scale: 分辨率比例
         """
         return self.train_cameras[scale]
 

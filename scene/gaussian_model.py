@@ -23,7 +23,6 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 
 
 class GaussianModel:
-
     def setup_functions(self):
         """
         定义和初始化处理高斯体模型参数的 激活函数
@@ -51,7 +50,7 @@ class GaussianModel:
 
     def __init__(self, sh_degree: int):
         """
-        3D高斯模型的各参数 初始化为0或空
+        初始化3D高斯模型的参数 和 激活函数
             sh_degree: 设定的 球谐函数的最大阶数，默认为3，用于控制颜色表示的复杂度
         """
         self.active_sh_degree = 0       # 当前球谐函数的阶数，初始为0
@@ -95,6 +94,7 @@ class GaussianModel:
         )
 
     def restore(self, model_args, training_args):
+        # 从chkpnt中加载相关训练参数
         (
             self.active_sh_degree,
             self._xyz,
@@ -109,7 +109,7 @@ class GaussianModel:
             opt_dict,
             self.spatial_lr_scale,
         ) = model_args
-        self.training_setup(training_args)
+        self.training_setup(training_args)  # 设置相关参数、配置优化器、创建位置学习率调整器
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
@@ -189,11 +189,11 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))       # 缩放因子，(N, 3)
         self._rotation = nn.Parameter(rots.requires_grad_(True))        # 单位旋转四元数，(N, 4)
         self._opacity = nn.Parameter(opacities.requires_grad_(True))    # 不透明度，(N, 1)
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 各3D高斯投影到二维的最大半径，初始化为0，(N, )
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 各3D高斯投影到2D平面上的最大半径，初始化为0，(N, )
 
     def training_setup(self, training_args):
         """
-        初始设置训练参数，包括初始化用于累积梯度的变量，配置优化器，以及创建位置学习率调整器
+        初始设置要训练的3D高斯参数，包括初始化用于累积梯度的变量，配置优化器，以及创建位置学习率调整器
             training_args: 包含优化相关参数的对象
         """
         # 在训练过程中，用于控制3D高斯的密度，在`densify_and_clone`中被使用
@@ -230,7 +230,7 @@ class GaussianModel:
         # 每次迭代都更新3D高斯的位置学习率
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration) # 调整学习率
+                lr = self.xyz_scheduler_args(iteration)  # 调整学习率
                 param_group["lr"] = lr
                 return lr
 
@@ -253,7 +253,7 @@ class GaussianModel:
 
     def save_ply(self, path):
         """
-        保存模型为ply文件
+        保存3D高斯模型为ply文件
         """
         mkdir_p(os.path.dirname(path))
 
@@ -268,7 +268,7 @@ class GaussianModel:
         dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes()]   # 遍历参数名称，创建一个元组，key为参数名，value为字符串"f4"，表示float32数据类型
         elements = np.empty(xyz.shape[0], dtype=dtype_full) # 创建一个空的 结构化数组 存储所有参数，(N,)
 
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)   # 所有要保存的参数数据先concatenate，(N, x)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)  # 所有要保存的参数数据先concatenate，(N, x)
         elements[:] = list(map(tuple, attributes))  # map：将每一行即每个3DGS的各参数数据转换为一个元组，list的每个元素为元组形式存储的一个3DGS的各参数数据
         el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
@@ -296,25 +296,25 @@ class GaussianModel:
         )
         opacities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis] # N 1
 
-        features_dc = np.zeros((xyz.shape[0], 3, 1))    # N 3 1
+        features_dc = np.zeros((xyz.shape[0], 3, 1))  # N 3 1
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
         # 读取球谐函数高阶分量的系数
-        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]    # 先获取参数名，3*15个
+        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]  # 先获取参数名，3*15个
         extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
         assert len(extra_f_names) == 3 * (self.max_sh_degree + 1) ** 2 - 3  # (3 * 16) - 3
-        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))   # N 3*15
+        features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))  # N 3*15
         # 将高阶份量系数存储到features_extra中
         for idx, attr_name in enumerate(extra_f_names):
             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
         # Reshape (P, F*SH_coeffs) to (P, F, SH_coeffs except DC)
-        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))    # N 3 15
+        features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))  # N 3 15
 
         # 读取缩放因子
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
-        scales = np.zeros((xyz.shape[0], len(scale_names))) # N 3
+        scales = np.zeros((xyz.shape[0], len(scale_names)))  # N 3
         for idx, attr_name in enumerate(scale_names):
             scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
         # 读取旋转四元数
@@ -337,7 +337,7 @@ class GaussianModel:
         """
         将优化器保存的名为`name`的参数的值 强行替换为 传入的`tensor`，同时重置Adam优化器对应参数的状态变量：动量、平方动量（确保该参数新的值从一个干净的状态开始，不受之前优化路径的影响，确保优化过程的稳定性和收敛速度）
         """
-        optimizable_tensors = {}    # 存储新的优化参数及对应数据
+        optimizable_tensors = {}  # 存储新的优化参数及对应数据
         # 遍历优化器的所有参数组
         for group in self.optimizer.param_groups:
             if group["name"] == name:
@@ -346,11 +346,11 @@ class GaussianModel:
                 stored_state["exp_avg"] = torch.zeros_like(tensor)      # 将动量清零
                 stored_state["exp_avg_sq"] = torch.zeros_like(tensor)   # 将平方动量清零
 
-                del self.optimizer.state[group["params"][0]]    # 删除优化器中当前参数名对应旧数据的状态
+                del self.optimizer.state[group["params"][0]]  # 删除优化器中当前参数名对应旧数据的状态
                 group["params"][0] = nn.Parameter(tensor.requires_grad_(True))  # 旧数据替换为 输入的新数据，并设置为可计算梯度
-                self.optimizer.state[group["params"][0]] = stored_state # 将暂存的、动量清零的旧数据的状态 重新分配给 优化器中的新数据
+                self.optimizer.state[group["params"][0]] = stored_state  # 将暂存的、动量清零的旧数据的状态 重新分配给 优化器中的新数据
 
-                optimizable_tensors[group["name"]] = group["params"][0] # 将新的参数数据存储在optimizable_tensors字典中，key：参数名，value：可计算梯度的新数据
+                optimizable_tensors[group["name"]] = group["params"][0]  # 将新的参数数据存储在optimizable_tensors字典中，key：参数名，value：可计算梯度的新数据
         return optimizable_tensors
 
     def _prune_optimizer(self, mask):
@@ -403,7 +403,6 @@ class GaussianModel:
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group["params"][0], None)
             if stored_state is not None:
-
                 stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
                 stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0)
 
@@ -494,15 +493,15 @@ class GaussianModel:
             max_grad：       梯度阈值，决定是否应基于 2D 位置梯度对点进行增稠的限制，默认为0.0002
             min_opacity：    最小不透明度，0.005
             extent：         所有train相机到它们的中心点的 最大距离 * 1.1
-            max_screen_size：    3000代前为None；3000代后，也是在第一次重置不透明度前夕，为20
+            max_screen_size：    <= 3000代为None；> 3000代，也是在第一次重置不透明度后，为20
         """
-        grads = self.xyz_gradient_accum / self.denom    # 计算平均梯度
+        grads = self.xyz_gradient_accum / self.denom  # 计算从开始训练到当前迭代次数下 同一2D平面坐标处 梯度 的L2范数 的均值
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent) # 通过克隆增加密度
-        self.densify_and_split(grads, max_grad, extent) # 通过分裂增加密度
+        self.densify_and_clone(grads, max_grad, extent)  # 通过克隆增加密度
+        self.densify_and_split(grads, max_grad, extent)  # 通过分裂增加密度
 
-        # 接下来移除一些Gaussians，它们满足下列要求中的一个：
+        # 接下来移除一些3D高斯，它们满足下列要求中的一个：
         # 1. 接近透明（不透明度小于min_opacity）
         # 2. 在某个相机视野里出现过的最大2D半径大于屏幕（像平面）大小
         # 3. 在某个方向的最大缩放大于0.1 * extent（也就是说很长的长条形也是会被移除的）
@@ -516,6 +515,12 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        # 统计坐标的累积梯度和均值的分母（即迭代步数？）
+        """
+            viewspace_point_tensor: 各3D高斯投影到当前相机图像平面上的2D坐标
+            update_filter: 各3D高斯投影到当前相机图像平面上半径>0的mask
+        """
+        # 选择投影到当前相机图像平面上半径>0的3D高斯 投影在2D平面坐标处的 在x、y方向上的梯度，并计算这些梯度的L2范数；
+        # 在训练过程中一直累加在同一2D平面坐标处 梯度 的L2范数
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True)
+        # 同时记录梯度累加的 次数
         self.denom[update_filter] += 1
