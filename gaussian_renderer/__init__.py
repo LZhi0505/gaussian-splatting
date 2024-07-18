@@ -21,18 +21,18 @@ import matplotlib.pyplot as plt
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,
            return_depth=False, return_normal=False, return_opacity=False, use_trained_exp=False):
     """
-    渲染场景： 将高斯分布的点投影到2D屏幕上来生成渲染图像
-        viewpoint_camera: scene.cameras.Camera类的 实例
-        pc: 高斯模型
-        pipe:   流水线，规定了要干什么
-        bg_color: Background tensor 必须 on GPU
+    将3D高斯投影到当前相机的2D平面上来生成渲染图像
+        viewpoint_camera: 当前相机
+        pc:     3D高斯模型
+        pipe:   存储与渲染管线相关参数的args
+        bg_color: 表征背景颜色的tensor，维度为(3,)，必须在GPU上
         scaling_modifier:
         override_color:
     """
- 
-    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    # 创建一个与输入点云（高斯模型）大小相同的 零tensor，用于 记录屏幕空间中的点的位置
+
+    # 创建一个与3D高斯模型大小相同的tensor，并初始化为0，用于 记录屏幕空间中的点的位置，将用它来让 PyTorch 返回二维（屏幕空间）均值的梯度
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+
     try:
         # 尝试保留张量的梯度，确保在反向传播过程中 计算对于屏幕空间坐标的 梯度
         screenspace_points.retain_grad()
@@ -63,11 +63,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # 创建一个高斯光栅化器对象，用于将高斯分布投影到屏幕上
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz            # 高斯模型的 三维坐标
-    means2D = screenspace_points    # 疑似各个Gaussian的 中心投影到在图像中的坐标
-    opacity = pc.get_opacity        # 不透明度
+    means3D = pc.get_xyz            # 各3D高斯中心的 三维坐标
+    means2D = screenspace_points    # 各3D高斯的 中心投影到在当前相机图像平面上的坐标
+    opacity = pc.get_opacity        # 不透明度（sigmoid激活后的）
 
-    # If precomputed 3d covariance is provided, use it. If not, then it will be computed from scaling / rotation by the rasterizer.
     # 如果提供了预先计算的3D协方差矩阵，则使用它。否则，它将由光栅化器根据尺度和旋转进行计算
     scales = None
     rotations = None
@@ -119,7 +118,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
-    # 返回一个字典，包含渲染的图像、屏幕空间坐标、可见性过滤器（根据半径判断是否可见）以及每个高斯分布在屏幕上的半径
+    # 返回一个字典，包含渲染的图像、屏幕空间坐标、可见性过滤器（根据半径判断是否可见）以及每个3D高斯投影到图像平面上的半径
     rendered_image = rendered_image.clamp(0, 1)
     out = {
         "render": rendered_image,
