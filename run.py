@@ -25,22 +25,26 @@ import os
 #     print(one_cmd)
 #     os.system(one_cmd)
 
-for idx, scene in enumerate({'building2-train': 'cpu',  'building3-train': 'cuda'}.items()):
-    print('---------------------------------------------------------------------------------')
-    one_cmd = f'python train.py --source_path /data2/lpl/data/carla-dataset/{scene[0]} --model_path output/{scene[0]} --data_device "{scene[1]}" --resolution 1 --checkpoint_iterations 30000 --port 6009'
-    print(one_cmd)
-    os.system(one_cmd)
+# for idx, scene in enumerate({'building2-train': 'cpu',  'building3-train': 'cuda'}.items()):
+#     print('---------------------------------------------------------------------------------')
+#     one_cmd = f'python train.py --source_path /data2/lpl/data/carla-dataset/{scene[0]} --model_path output/{scene[0]} --data_device "{scene[1]}" --resolution 1 --checkpoint_iterations 30000 --port 6009'
+#     print(one_cmd)
+#     os.system(one_cmd)
 
 # python render.py -m <path to trained model>
-for idx, scene in enumerate(['building2-train', 'building3-train']):
-    print('---------------------------------------------------------------------------------')
-    one_cmd = f'python render.py -m output/{scene}'
-    print(one_cmd)
-    os.system(one_cmd)
+# for idx, scene in enumerate(['building2-train', 'building3-train']):
+#     print('---------------------------------------------------------------------------------')
+#     one_cmd = f'python render.py -m output/{scene}'
+#     print(one_cmd)
+#     os.system(one_cmd)
 
 # python metrics.py -m <path to trained model>
-for idx, scene in enumerate(['building2-train', 'building3-train']):
-    print('---------------------------------------------------------------------------------')
-    one_cmd = f'python metrics.py -m output/{scene}'
-    print(one_cmd)
-    os.system(one_cmd)
+# for idx, scene in enumerate(['building2-train', 'building3-train']):
+#     print('---------------------------------------------------------------------------------')
+#     one_cmd = f'python metrics.py -m output/{scene}'
+#     print(one_cmd)
+#     os.system(one_cmd)
+
+cmd = f'python train.py -s /media/liuzhi/disk/Dataset/3DGS_Dataset/DJI_qixingpark_crossroad -m output/qixingpark'
+print(cmd)
+os.system(cmd)
