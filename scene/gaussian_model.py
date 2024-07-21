@@ -72,7 +72,7 @@ class GaussianModel:
 
         self.optimizer = None  # 优化器，用于调整上述参数以改进模型（论文中采用Adam，见附录B Algorithm 1的伪代码）
 
-        self.percent_dense = 0      # 百分比密度，控制3D高斯的密度
+        self.percent_dense = 0      # 百分比密度，控制3D高斯的密度，默认为0.01
         self.spatial_lr_scale = 0   # 各3D高斯的 位置学习率的变化因子，位置的学习率乘以它，以抵消在不同尺度下应用同一个学习率带来的问题
 
         # 初始化高斯体模型各参数的 激活函数
@@ -210,7 +210,7 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))       # 缩放因子，(N, 3)
         self._rotation = nn.Parameter(rots.requires_grad_(True))        # 单位旋转四元数，(N, 4)
         self._opacity = nn.Parameter(opacities.requires_grad_(True))    # 不透明度，(N, 1)
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 各3D高斯投影到所有2D图像平面上的最大半径，初始化为0，(N, )
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 投影到所有2D图像平面上的最大半径，初始化为0，(N, )
         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
         self.pretrained_exposures = None
         exposure = torch.eye(3, 4, device="cuda")[None].repeat(len(cam_infos), 1, 1)
@@ -401,7 +401,7 @@ class GaussianModel:
 
     def _prune_optimizer(self, mask):
         """
-        根据`mask`清除 优化器中的参数组中要去除的3D高斯 对应的参数数据 和 状态中的动量
+        保留`mask`为True对应位置的3D高斯，清除 优化器中的参数组中要被去除的3D高斯 对应的参数数据 和 状态中的动量
             mask：维度为 (N,)，为True表示要保留该3D高斯
         """
         optimizable_tensors = {}
@@ -427,13 +427,13 @@ class GaussianModel:
 
     def prune_points(self, mask):
         """
-        根据`mask`删除部分3D高斯，并移除它们的所有属性
+        删除`mask`中为True对应位置的3D高斯，并移除它们的所有属性
             mask：维度为 (N,)，为True表示要去除该3D高斯
         """
-        valid_points_mask = ~mask   # 要保留的3D高斯
+        valid_points_mask = ~mask   # 要保留的3D高斯mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
-        # 重置各个参数
+        # 重置高斯模型中各参数对应的张量
         self._xyz = optimizable_tensors["xyz"]
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
@@ -447,29 +447,38 @@ class GaussianModel:
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
-        # 把新的张量字典添加到优化器
+        """
+        将包含新3D高斯参数的张量字典 添加到优化器中
+            return：新的参数张量
+        """
         optimizable_tensors = {}
+        # 遍历优化器的参数组
         for group in self.optimizer.param_groups:
-            assert len(group["params"]) == 1
-            extension_tensor = tensors_dict[group["name"]]
-            stored_state = self.optimizer.state.get(group["params"][0], None)
+            assert len(group["params"]) == 1    # 确保每个参数组中仅包含一个参数
+            extension_tensor = tensors_dict[group["name"]]  # 获取当前参数组对应的新张量
+            stored_state = self.optimizer.state.get(group["params"][0], None)   # 获取当前参数组中第一个参数的优化器状态（如动量和平方动量）
             if stored_state is not None:
+                # 当前参数有优化器状态，则更新状态：将动量、平方动量扩展，新部分初始化为0
                 stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
                 stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0)
+                del self.optimizer.state[group["params"][0]]    # 删除旧的优化器状态
 
-                del self.optimizer.state[group["params"][0]]
-                group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
-                self.optimizer.state[group["params"][0]] = stored_state
+                group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))    # 将当前参数与新张量cat，创建新的参数张量
+                self.optimizer.state[group["params"][0]] = stored_state     # 赋予新的状态
 
-                optimizable_tensors[group["name"]] = group["params"][0]
+                optimizable_tensors[group["name"]] = group["params"][0]     # 暂存新的参数张量
             else:
+                # 当前参数无优化器状态，则直接将当前参数与新张量cat，创建新的参数张量
                 group["params"][0] = nn.Parameter(torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
                 optimizable_tensors[group["name"]] = group["params"][0]
 
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
-        # 新增Gaussian，把新属性添加到优化器中
+        """
+        将新增3D高斯的参数张量添加到优化器中，更新高斯模型的各参数张量，重置梯度累加值、累加次数、投影到2D平面的最大半径为0
+        """
+        # 1. 将新增3D高斯的参数张量添加到优化器中，并返回新的参数张量
         d = {
             "xyz": new_xyz,
             "f_dc": new_features_dc,
@@ -478,8 +487,9 @@ class GaussianModel:
             "scaling": new_scaling,
             "rotation": new_rotation,
         }
-
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
+
+        # 2. 更新高斯模型的各参数张量
         self._xyz = optimizable_tensors["xyz"]
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
@@ -487,62 +497,70 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        # 3. 重置 梯度累加值、累加次数、投影到2D平面的最大半径 为0
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")    # N 1
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")                 # N 1
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")              # N
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         """
-
-            grads: 训练到目前 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 的均值
-            grad_threshold: 梯度阈值，默认为0.0002
-            scene_extent:   所有train相机包围圈的半径 * 1.1
-            N：              ，默认为2
+        通过`分裂`增稠（条件1 && 条件2），新3D高斯的位置是以原先的大高斯作为概率密度函数进行采样的，新3D高斯的缩放因子被除以φ=1.6
+            grads: 训练到目前 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 平均每次累加的值，(N,)
+            grad_threshold： 梯度阈值，默认为0.0002
+            scene_extent：   所有train相机包围圈的半径 * 1.1
+            N：              代表1个3D高斯分裂为N个，默认为2
         """
-        n_init_points = self.get_xyz.shape[0]
+        n_init_points = self.get_xyz.shape[0]   # 当前3D高斯个数
         # Extract points that satisfy the gradient condition
-        padded_grad = torch.zeros((n_init_points), device="cuda")
+        # 初始化 扩展后的3D高斯梯度为 0张量，并用实际当前梯度填充前面的部分
+        padded_grad = torch.zeros((n_init_points), device="cuda")   # (N_3DGS,)
         padded_grad[: grads.shape[0]] = grads.squeeze()
+
+        # 2. 标记出满足（条件1 && 条件2）的大3D高斯 分裂成 两个小3D高斯
+        # 条件1：累加梯度 >= 阈值
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        # 条件2：最大缩放因子 > （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent)
 
-        """
-        被分裂的Gaussians满足两个条件：
-        1. （平均）梯度过大；
-        2. 在某个方向的最大缩放大于一个阈值。
-        参照论文5.2节“On the other hand...”一段，大Gaussian被分裂成两个小Gaussians，
-        其放缩被除以φ=1.6，且位置是以原先的大Gaussian作为概率密度函数进行采样的。
-        """
+        # 3. 分裂
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)     # 标准差：被分裂的大3D高斯的缩放因子 复制N-1次，N_select3DGS, 3 ==> N_selected3DGS * 2, 3
+        means = torch.zeros((stds.size(0), 3), device="cuda")       # 均值：初始化为0，N_selected3DGS * 2, 3
+        samples = torch.normal(mean=means, std=stds)                # 生成标准正态分布的随机样本，均值为0，标准差为stds，N_selected3DGS * 2, 3
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)    # 被分裂的大3D高斯的旋转四元数转为旋转矩阵，并复制N-1次，N_selected3DGS, 3, 3 ==> N_selected3DGS * 2, 3, 3
 
-        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
-        means = torch.zeros((stds.size(0), 3), device="cuda")
-        samples = torch.normal(mean=means, std=stds)
-        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
-        # 算出随机采样出来的新坐标。bmm: batch matrix-matrix product
+        # 新的两个小3D高斯的位置，以原先大高斯作为概率密度函数进行采样的：大3D高斯的旋转矩阵 @ 随机样本`sample`，再加上大3D高斯的位置，N_selected3DGS * 2, 3（bmm: 批量矩阵乘法，对输入矩阵的最后两个维度执行矩阵乘法，其他维度不变）
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N))
+        # 新的两个小3D高斯的缩放因子，以原先大高斯的缩放因子除以 φ = 0.8 * N = 1.6得到
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)) # N_selected3DGS * 2, 3
+        # 剩下的参数直接复制
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
 
+        # 将分裂出的两个新3D高斯的参数张量添加到优化器中，更新高斯模型的各参数张量，重置梯度累加值、累加次数、投影到2D平面的最大半径为0
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
-
+        # 创建一个剪枝mask，清除对应位置为True的3D高斯，包括被分裂的大3D高斯，新分裂的小3D高斯不清楚
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         """
-
-            grads: 训练到目前 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 的均值，(N,)
+        通过`克隆`增稠（条件1 && 条件2）
+        条件1：累加梯度的L2范数 >= 阈值
+        条件2：最大缩放因子 <= （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
+            grads: 训练到目前 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 平均每次累加的值，(N,)
             grad_threshold: 梯度阈值，默认为0.0002
             scene_extent:   所有train相机包围圈的半径 * 1.1
         """
-        # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)   #
+        # 1. 标记出满足（条件1 && 条件2）的3D高斯进行克隆
+        # 条件1：累加梯度的L2范数 >= 阈值
+        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
+        # 条件2：最大缩放因子 <= （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values <= self.percent_dense * scene_extent)
-        # 提取出大于阈值`grad_threshold`且缩放参数较小（小于self.percent_dense * scene_extent）的Gaussians，在下面进行克隆
 
+        # 2. 克隆
+        # 2.1 复制被克隆的3D高斯的参数
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]
@@ -550,6 +568,7 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
+        # 2.2 将新增3D高斯的参数张量添加到优化器中；更新高斯模型的各参数张量；重置梯度累加值、累加次数、投影到2D平面的最大半径为0
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
@@ -560,14 +579,14 @@ class GaussianModel:
             extent：         所有train相机包围圈的半径 * 1.1
             max_screen_size：    <= 3000代为None；[3100, 14900]代为20
         """
-        grads = self.xyz_gradient_accum / self.denom  # 计算从开始训练到当前迭代次数下 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 的均值，(N,)
+        grads = self.xyz_gradient_accum / self.denom  # 计算从开始训练到当前迭代次数下 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 平均每次累加的值，(N,)
         grads[grads.isnan()] = 0.0  # NaN值设为0，保持数值稳定性
 
-        # 增稠
-        self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域通过克隆增加密度
+        # 1. 增稠
+        self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域克隆增稠（累加梯度的L2范数 >= 阈值 && 最大缩放因子 <= percent_dense，0.01*所有train相机包围圈的半径*1.1）
         self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域通过分裂增加密度
 
-        # 剪枝
+        # 2. 剪枝
         # 条件1：不透明度<最低阈值0.005
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
@@ -577,7 +596,7 @@ class GaussianModel:
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             # 逻辑或
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        # 清除 优化器中的参数组中满足(条件1 || 条件2 || 条件3)的3D高斯 对应的参数数据 和 状态中的动量
+        # 清除 优化器中的参数组中满足（条件1 || 条件2 || 条件3）的3D高斯 对应的参数数据 和 状态中的动量
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()    # 清理GPU缓存，释放一些内存
