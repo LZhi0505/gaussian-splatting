@@ -505,6 +505,8 @@ class GaussianModel:
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         """
         通过`分裂`增稠（条件1 && 条件2），新3D高斯的位置是以原先的大高斯作为概率密度函数进行采样的，新3D高斯的缩放因子被除以φ=1.6
+        条件1：累加梯度 >= 阈值
+        条件2：最大缩放因子 > （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
             grads: 训练到目前 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 平均每次累加的值，(N,)
             grad_threshold： 梯度阈值，默认为0.0002
             scene_extent：   所有train相机包围圈的半径 * 1.1
@@ -540,7 +542,7 @@ class GaussianModel:
 
         # 将分裂出的两个新3D高斯的参数张量添加到优化器中，更新高斯模型的各参数张量，重置梯度累加值、累加次数、投影到2D平面的最大半径为0
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
-        # 创建一个剪枝mask，清除对应位置为True的3D高斯，包括被分裂的大3D高斯，新分裂的小3D高斯不清楚
+        # 创建一个剪枝mask，清除对应位置为True的3D高斯，即清除被分裂的原大3D高斯，不清除新分裂的小3D高斯
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
@@ -574,7 +576,7 @@ class GaussianModel:
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         """
         增稠和剪枝
-            max_grad：       梯度阈值，默认为0.0002，决定是否应基于 2D 位置梯度对点进行增稠的限制
+            max_grad：       最大梯度阈值，即arguments中的densify_grad_threshold，默认为0.0002，决定是否应基于2D位置梯度对3D高斯进行增稠的阈值
             min_opacity：    最小不透明度阈值，默认为0.005
             extent：         所有train相机包围圈的半径 * 1.1
             max_screen_size：    <= 3000代为None；[3100, 14900]代为20
@@ -584,19 +586,19 @@ class GaussianModel:
 
         # 1. 增稠
         self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域克隆增稠（累加梯度的L2范数 >= 阈值 && 最大缩放因子 <= percent_dense，0.01*所有train相机包围圈的半径*1.1）
-        self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域通过分裂增加密度
+        self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域分裂增稠（累加梯度 >= 阈值 && 最大缩放因子 > percent_dense*所有train相机包围圈的半径*1.1）
 
-        # 2. 剪枝
-        # 条件1：不透明度<最低阈值0.005
+        # 2. 剪枝（不透明度 < 最低阈值 || 3D高斯太大 || 3D高斯针状）
+        # 条件1：不透明度 < 最低阈值0.005
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             # 条件2：[3100, 14900]代，各3D高斯投影到所有2D图像平面上的最大半径 > 20个像素（太大要被去除）
             big_points_vs = self.max_radii2D > max_screen_size
-            # 条件3：[3100, 14900]代，各3D高斯的最大尺度 > 0.1*所有train相机包围圈的半径*1.1（太大或针状要被去除）
+            # 条件3：[3100, 14900]代，各3D高斯的最大缩放因子 > 0.1*所有train相机包围圈的半径*1.1（太大或针状要被去除）
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             # 逻辑或
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        # 清除 优化器中的参数组中满足（条件1 || 条件2 || 条件3）的3D高斯 对应的参数数据 和 状态中的动量
+        # 清除 优化器中的参数组中满足（条件1 || 条件2 || 条件3）的3D高斯，包括对应的参数数据 及 状态中的动量
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()    # 清理GPU缓存，释放一些内存
