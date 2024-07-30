@@ -504,7 +504,7 @@ class GaussianModel:
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         """
-        通过`分裂`增稠（条件1 && 条件2），新3D高斯的位置是以原先的大高斯作为概率密度函数进行采样的，新3D高斯的缩放因子被除以φ=1.6
+        通过`分裂`增稠（条件1 && 条件2），新3D高斯的位置是以原先的大高斯作为概率密度函数进行采样的，新3D高斯的缩放因子被除以φ=1.6，以减小尺寸
         条件1：累加梯度 >= 阈值
         条件2：最大缩放因子 > （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
             grads: 训练到目前 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 平均每次累加的值，(N,)
@@ -525,15 +525,15 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent)
 
         # 3. 分裂
-        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)     # 标准差：被分裂的大3D高斯的缩放因子 复制N-1次，N_select3DGS, 3 ==> N_selected3DGS * 2, 3
-        means = torch.zeros((stds.size(0), 3), device="cuda")       # 均值：初始化为0，N_selected3DGS * 2, 3
-        samples = torch.normal(mean=means, std=stds)                # 生成标准正态分布的随机样本，均值为0，标准差为stds，N_selected3DGS * 2, 3
-        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)    # 被分裂的大3D高斯的旋转四元数转为旋转矩阵，并复制N-1次，N_selected3DGS, 3, 3 ==> N_selected3DGS * 2, 3, 3
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)     # 标准差：被分裂的大3D高斯的缩放因子 复制N-1次，[N_select3DGS, 3] ==> [N_selected3DGS * 2, 3]
+        means = torch.zeros((stds.size(0), 3), device="cuda")       # 均值：初始化为0，[N_selected3DGS * 2, 3]
+        samples = torch.normal(mean=means, std=stds)                # 生成标准正态分布的随机样本，均值为0，标准差为stds，[N_selected3DGS * 2, 3]
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)    # 被分裂的大3D高斯的旋转四元数转为旋转矩阵，并复制N-1次，[N_selected3DGS, 3, 3] ==> [N_selected3DGS * 2, 3, 3]
 
-        # 新的两个小3D高斯的位置，以原先大高斯作为概率密度函数进行采样的：大3D高斯的旋转矩阵 @ 随机样本`sample`，再加上大3D高斯的位置，N_selected3DGS * 2, 3（bmm: 批量矩阵乘法，对输入矩阵的最后两个维度执行矩阵乘法，其他维度不变）
+        # 新的两个小3D高斯的位置，以原先大高斯作为概率密度函数进行采样的：大3D高斯的旋转矩阵 @ 随机样本`sample`，再加上大3D高斯的位置，[N_selected3DGS * 2, 3, 3] @ [N_selected3DGS * 2, 3, 1] = [N_selected3DGS * 2, 3, 1] ==> [N_selected3DGS * 2, 3]（bmm: 批量矩阵乘法，对输入矩阵的最后两个维度执行矩阵乘法，其他维度不变）
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
         # 新的两个小3D高斯的缩放因子，以原先大高斯的缩放因子除以 φ = 0.8 * N = 1.6得到
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)) # N_selected3DGS * 2, 3
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)) # [N_selected3DGS * 2, 3]
         # 剩下的参数直接复制
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
@@ -585,8 +585,8 @@ class GaussianModel:
         grads[grads.isnan()] = 0.0  # NaN值设为0，保持数值稳定性
 
         # 1. 增稠
-        self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域克隆增稠（累加梯度的L2范数 >= 阈值 && 最大缩放因子 <= percent_dense，0.01*所有train相机包围圈的半径*1.1）
-        self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域分裂增稠（累加梯度 >= 阈值 && 最大缩放因子 > percent_dense*所有train相机包围圈的半径*1.1）
+        self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域 克隆 增稠（累加梯度的L2范数 >= 阈值 && 最大缩放因子 <= percent_dense(0.01)*所有train相机包围圈的半径*1.1）
+        self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域 分裂 增稠（累加梯度 >= 阈值 && 最大缩放因子 > percent_dense*所有train相机包围圈的半径*1.1）
 
         # 2. 剪枝（不透明度 < 最低阈值 || 3D高斯太大 || 3D高斯针状）
         # 条件1：不透明度 < 最低阈值0.005
