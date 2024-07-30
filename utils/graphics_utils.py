@@ -36,6 +36,11 @@ def getWorld2View(R, t):
     return np.float32(Rt)
 
 def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
+    """
+    计算W2C的变换矩阵
+        R:  W2C的 旋转矩阵
+        t:  W2C的 平移向量
+    """
     Rt = np.zeros((4, 4))
     Rt[:3, :3] = R.transpose()  # W2C的 R
     Rt[:3, 3] = t   # W2C的 t
@@ -50,15 +55,20 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     return np.float32(Rt)
 
 def getProjectionMatrix(znear, zfar, fovX, fovY):
+    """
+    计算变换矩阵P，将 相机坐标系中的3D点 转换到 NDC坐标系中（可能是因为colmap允许每个相机拥有不同的内参，不同的视场角，所以这里将不同的相机统一到NDC坐标系中）
+        znear，zfar: 相机光心 到 视锥体最近平面、最远平面的距离
+        fovX，fovY:  水平、垂直方向上视场角
+    """
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
 
-    top = tanHalfFovY * znear
+    top = tanHalfFovY * znear   # 近平面顶部 到 相机光轴的 高度
     bottom = -top
-    right = tanHalfFovX * znear
+    right = tanHalfFovX * znear # 近平面右部 到 相机光轴的 宽度
     left = -right
 
-    P = torch.zeros(4, 4)
+    P = torch.zeros(4, 4)   # 相机坐标系中的3D点 转换到 NDC坐标系中的 变换矩阵，P * [x, y, z, 1] ~= [x', y', z', 1]
 
     z_sign = 1.0
 
