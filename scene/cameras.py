@@ -28,7 +28,7 @@ class Camera(nn.Module):
         self.colmap_id = colmap_id
         self.R = R  # 相机到世界的 C2W
         self.T = T  # 世界到相机的 W2C
-        self.FoVx = FoVx
+        self.FoVx = FoVx    # 水平方向上视场角
         self.FoVy = FoVy
         self.image_name = image_name
 
@@ -77,17 +77,20 @@ class Camera(nn.Module):
             else:
                 self.depth_reliable = True
 
-        # 距离相机平面znear和zfar之间且在视锥内的物体才会被渲染
+        # 相机光心 到 视锥体最近平面、最远平面的距离，只有znear和zfar之间 且 在视锥内的高斯体才会被渲染
         self.zfar = 100.0
         self.znear = 0.01
 
         self.trans = trans  # 相机中心的平移
         self.scale = scale  # 相机中心坐标的缩放
 
-        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda() # getWorld2View获取的是 W2C的变换矩阵（需确认的是这的转置是代表 C2W，还是仅是为了后面的运算）
-        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()    # 生成了一个投影矩阵，用于将视图坐标投影到图像平面
-        self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0) # 世界坐标系到图像坐标系的变换矩阵：使用 bmm（批量矩阵乘法）将世界到视图变换矩阵和投影矩阵相乘，生成完整的投影变换矩阵
-        self.camera_center = self.world_view_transform.inverse()[3, :3] # 通过求逆变换矩阵获取 相机在世界坐标系中的位置（相机中心）
+        # W 2 C 的变换矩阵：getWorld2View获取的就是是 W2C的变换矩阵，(后面的转置不是代表 C2W，而是为了后面的矩阵运算)，[4, 4]
+        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
+        # C 2 NDC 的变换矩阵：将相机坐标系中的3D点 转换到 NDC坐标系中，[4, 4]（NDC点投影到相机平面中的代码在cuda中）
+        self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0, 1).cuda()
+        # W 2 NDC 的变换矩阵：bmm只对输入矩阵的最后两个维度执行矩阵乘，即[1, 4, 4] @ [1, 4, 4] = [1, 4, 4] ==> [4, 4]
+        self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
+        self.camera_center = self.world_view_transform.inverse()[3, :3] # C2W的变换矩阵的平移向量 即为 相机光心在世界坐标系中的位置
 
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):
