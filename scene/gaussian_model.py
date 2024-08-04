@@ -547,9 +547,9 @@ class GaussianModel:
         # 条件1：不透明度 < 最低阈值0.005
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
-            # 条件2：[3100, 14900]代，各3D高斯投影到所有2D图像平面上的最大半径 > 20个像素（太大要被去除）
+            # 条件2：[3100, 14900]代，各3D高斯投影到所有2D图像平面上的最大半径 > 20个像素（在视图空间中太大要被去除）
             big_points_vs = self.max_radii2D > max_screen_size
-            # 条件3：[3100, 14900]代，各3D高斯的最大缩放因子 > 0.1*所有train相机包围圈的半径*1.1（太大或针状要被去除）
+            # 条件3：[3100, 14900]代，各3D高斯的最大缩放因子 > 0.1*所有train相机包围圈的半径*1.1（在世界空间中太大或针状要被去除）
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             # 逻辑或
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
