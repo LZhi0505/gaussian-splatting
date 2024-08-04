@@ -197,7 +197,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold
                     )
 
-                # 每迭代3000次 或 白背景且第一次增稠前(500代)，则重置所有3D高斯的不透明度（ < 0.01）
+                # 每迭代3000次 或 白背景且第一次增稠前(500代)，则重置所有3D高斯的不透明度（ < 0.01），防止相机附近出现伪影
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
