@@ -11,7 +11,7 @@
 
 import torch
 import math
-from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer   # 对应代码在 diff-gaussian-rasterization/diff_gaussian_rasterization/__init__.py中
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from utils.general_utils import build_rotation
@@ -21,16 +21,16 @@ import matplotlib.pyplot as plt
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,
            return_depth=False, return_normal=False, return_opacity=False, use_trained_exp=False):
     """
-    将3D高斯投影到当前相机的2D平面上来生成渲染图像
+    将3D高斯投影到当前相机的2D图像平面上，生成渲染图像
         viewpoint_camera: 当前相机
         pc:     3D高斯模型
         pipe:   存储与渲染管线相关参数的args
-        bg_color: 表征背景颜色的tensor，维度为(3,)，必须在GPU上
+        bg_color: 表征背景颜色的tensor，维度为(3,)，默认为黑色(0,0,0)，必须在GPU上
         scaling_modifier:
-        override_color:
+        override_color: 预先提供的用于覆盖的颜色，默认为None，则表示预先未提供颜色
     """
 
-    # 创建一个与3D高斯模型大小相同的tensor，并初始化为0，用于 记录屏幕空间中的点的位置，将用它来让 PyTorch 返回二维（屏幕空间）均值的梯度
+    # 创建一个与3D高斯模型大小相同的tensor，并初始化为0，记录屏幕空间中的点的位置，将用它来让 PyTorch 返回对于2D屏幕空间坐标的梯度的均值
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
 
     try:
@@ -39,12 +39,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     except:
         pass
 
-    # Set up rasterization configuration
-    # 计算视场的 tan 值，这将用于设置光栅化配置
+    # 计算视场角的tan值，用于设置光栅化配置
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5) # W = 2fx * tan(Fovx/2)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    # 设置光栅化的配置，包括图像的大小、视场的 tan 值、背景颜色、视图矩阵viewmatrix、投影矩阵projmatrix等
+    # 设置光栅器的配置，包括图像的大小、视场的 tan 值、背景颜色、视图矩阵viewmatrix、投影矩阵projmatrix等
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -52,56 +51,55 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         tanfovy=tanfovy,
         bg=bg_color,    # 背景颜色
         scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform,   # W2C的 变换矩阵
-        projmatrix=viewpoint_camera.full_proj_transform,    # W2C的 投影矩阵
-        sh_degree=pc.active_sh_degree,  # 当前的球谐阶数
-        campos=viewpoint_camera.camera_center,  # 当前相机的中心位置
+        viewmatrix=viewpoint_camera.world_view_transform,   # W2C 的变换矩阵（视图矩阵）
+        projmatrix=viewpoint_camera.full_proj_transform,    # W2NDC 的变换矩阵（投影矩阵）
+        sh_degree=pc.active_sh_degree,  # 当前3D高斯模型的的球谐阶数
+        campos=viewpoint_camera.camera_center,  # 当前相机中心在世界坐标系中的坐标
         prefiltered=False,
         debug=pipe.debug,
         antialiasing=pipe.antialiasing
     )
 
-    # 创建一个高斯光栅化器对象，用于将高斯分布投影到屏幕上
+    # 创建一个可微光栅器，将高斯分布投影到屏幕上
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     means3D = pc.get_xyz            # 各3D高斯中心的 三维坐标
     means2D = screenspace_points    # 各3D高斯的 中心投影到在当前相机图像平面上的坐标
     opacity = pc.get_opacity        # 不透明度（sigmoid激活后的）
 
-    # 如果提供了预先计算的3D协方差矩阵，则使用它。否则，它将由光栅化器根据尺度和旋转进行计算
+    # 获取3D协方差矩阵
     scales = None
     rotations = None
     cov3D_precomp = None
 
     if pipe.compute_cov3D_python:
+        # 如果提供了预先计算的3D协方差矩阵，则使用它
         cov3D_precomp = pc.get_covariance(scaling_modifier)
     else:
-        # 默认后续由光栅化器计算
+        # 默认为False，表示后续由光栅器根据尺度和旋转进行计算3D协方差矩阵
         scales = pc.get_scaling
         rotations = pc.get_rotation
 
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
+    # 获取颜色
     shs = None
     colors_precomp = None
     if override_color is None:
-        # 默认，未提供预先计算的颜色
+        # 默认为None，表示未提供预先计算的颜色，则需计算颜色
         if pipe.convert_SHs_python:
-            # 在Python中从球谐函数中预计算颜色
+            # 若希望在Python代码中从球谐函数计算颜色，则执行
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2) # 将SH特征的形状调整为（B * N, 3, (max_sh_degree+1)**2）
             dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))  # 计算相机中心到每个点的方向向量，并归一化
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True) # 计算相机中心到每个点的方向向量，并归一化
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)  # 使用SH特征将方向向量转换为RGB颜色（？找到高斯中心到相机的光线在单位球体上的坐标）
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0) # 将RGB颜色的范围限制在0到1之间（？球谐的傅里叶系数转成RGB颜色）
         else:
-            # 默认，通过光栅化器 从 球谐函数 -> RGB
+            # 默认为False，表示将通过光栅器 从 球谐函数 -> RGB
             shs = pc.get_features
     else:
-        # 提供了预先计算的颜色，则使用它们
+        # 提供了预先计算的颜色，则使用它
         colors_precomp = override_color
 
-    # Rasterize visible Gaussians to image, obtain their radii (on screen).
-    # 调用光栅化器，将高斯椭球投影到屏幕上，获得 渲染图像 和 每个高斯分布在屏幕上的半径(radii)
+    # 调用光栅器将 在视野范围内的3D高斯投影到图像平面上，获取渲染图像 和 每个3D高斯在图像平面上的半径(radii)
     rendered_image, radii, depth_image = rasterizer(
         means3D = means3D,
         means2D = means2D,
