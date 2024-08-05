@@ -91,7 +91,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             except Exception as e:
                 network_gui.conn = None
 
-        iter_start.record()  # 记录迭代开始时间
+        iter_start.record()  # 记录当前迭代的开始时间
 
         gaussians.update_learning_rate(iteration)  # 根据当前迭代次数更新位置学习率
 
@@ -134,10 +134,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
 
-        iter_end.record()  # 记录迭代结束时间
+        iter_end.record()  # 记录当前迭代的结束时间
 
         with torch.no_grad():
-            # 更新进度条和loss显示
+            # 记录loss的指数移动平均值，并定期更新进度条
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             if iteration % 10 == 0:
                 # 每迭代10次，更新一次进度条
@@ -147,7 +147,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # 到达设定的训练次数，关闭进度条
                 progress_bar.close()
 
-            # 定期记录训练数据
+            # 定期测试模型训练情况
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
 
             if (iteration in saving_iterations):
@@ -212,15 +212,30 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene: Scene, renderFunc, renderArgs):
+    """
+        tb_writer:
+        iteration:  当前迭代次数
+        Ll1:        当前迭代的 L1 loss
+        loss:       当前迭代的总 loss
+        l1_loss:    L1 loss计算函数
+        elapsed:    当前迭代中的 训练时间
+        testing_iterations: 要测试PSNR的迭代次数列表
+        scene:      3D场景
+        renderFunc: 渲染函数
+        renderArgs: (与渲染管线相关的参数，背景颜色默认黑色)
+    """
     if tb_writer:
+        # 将 L1 loss、总体 loss 和迭代时间写入 TensorBoard。
         tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1.item(), iteration)
         tb_writer.add_scalar("train_loss_patches/total_loss", loss.item(), iteration)
         tb_writer.add_scalar("iter_time", elapsed, iteration)
 
-    # Report test and samples of training set
     if iteration in testing_iterations:
+        # 到达指定的测试迭代次数，渲染并计算 L1 loss 和 PSNR
         torch.cuda.empty_cache()
+        # 渲染所有的test相机，从train相机中选择5个相机：第5, 10, 15, 20, 25个
         validation_configs = (
             {"name": "test", "cameras": scene.getTestCameras()},
             {"name": "train", "cameras": [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]},
@@ -228,27 +243,35 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
         for config in validation_configs:
             if config["cameras"] and len(config["cameras"]) > 0:
+                # 渲染train/test相机
                 l1_test = 0.0
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config["cameras"]):
+                    # 遍历每个相机视角，获取当前视角下的渲染图像(限制到0,1) 与 gt图像
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if tb_writer and (idx < 5):
+                        # 在TensorBoard中记录渲染结果和真实图像
                         tb_writer.add_images(config["name"] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
                         if iteration == testing_iterations[0]:
                             tb_writer.add_images(
                                 config["name"] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration
                             )
+                    # 计算 L1 loss 和 PSNR
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
+                # 平均
                 psnr_test /= len(config["cameras"])
                 l1_test /= len(config["cameras"])
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config["name"], l1_test, psnr_test))
+
                 if tb_writer:
+                    # 在 TensorBoard 中记录评估结果
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - l1_loss", l1_test, iteration)
                     tb_writer.add_scalar(config["name"] + "/loss_viewpoint - psnr", psnr_test, iteration)
 
         if tb_writer:
+            # 在 TensorBoard 中记录场景的不透明度直方图 和 总点数
             tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
             tb_writer.add_scalar("total_points", scene.gaussians.get_xyz.shape[0], iteration)
         torch.cuda.empty_cache()
