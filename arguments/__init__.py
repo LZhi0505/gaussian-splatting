@@ -71,8 +71,8 @@ class ModelParams(ParamGroup):
 
 class PipelineParams(ParamGroup):
     def __init__(self, parser):
-        self.convert_SHs_python = False
-        self.compute_cov3D_python = False
+        self.convert_SHs_python = False     # 为True，表示希望在Python代码中从球谐函数预计算颜色
+        self.compute_cov3D_python = False   # 为True，提供了预先计算的3D协方差矩阵
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
 
