@@ -94,7 +94,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0) # 将RGB颜色的范围限制在0到1之间
         else:
             # 默认
-            shs = pc.get_features
+            shs = pc.get_features   # (N,16,3)
     else:
         # 提供了预先计算的颜色，则使用它
         colors_precomp = override_color
