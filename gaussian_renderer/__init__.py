@@ -43,7 +43,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5) # W = 2fx * tan(Fovx/2)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    # 设置光栅器的配置，包括图像的大小、视场的 tan 值、背景颜色、视图矩阵viewmatrix、投影矩阵projmatrix等
+    # 设置光栅器的配置
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -63,37 +63,38 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # 创建一个可微光栅器，将高斯分布投影到屏幕上
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz            # 各3D高斯中心的 三维坐标
-    means2D = screenspace_points    # 各3D高斯的 中心投影到在当前相机图像平面上的坐标
-    opacity = pc.get_opacity        # 不透明度（sigmoid激活后的）
+    means3D = pc.get_xyz            # 所有高斯中心的 世界坐标
+    means2D = screenspace_points    # 所有高斯中心投影到当前相机图像平面上的二维坐标
+    opacity = pc.get_opacity        # 所有高斯的 不透明度（sigmoid激活后的）
 
-    # 获取3D协方差矩阵
+    # 计算所有高斯的3D协方差矩阵 or 获取所有高斯的缩放因子和旋转四元数，在光栅化阶段计算（并行，速度快）
     scales = None
     rotations = None
     cov3D_precomp = None
 
     if pipe.compute_cov3D_python:
-        # 如果提供了预先计算的3D协方差矩阵，则使用它
+        # 若希望在在python代码中计算3D协方差矩阵，则调用GaussianModel/build_covariance_from_scaling_rotation函数从从 缩放因子、旋转四元数 构建 所有高斯的 3D协方差矩阵
         cov3D_precomp = pc.get_covariance(scaling_modifier)
     else:
-        # 默认为False，表示后续由光栅器根据尺度和旋转进行计算3D协方差矩阵
+        # 默认
         scales = pc.get_scaling
         rotations = pc.get_rotation
 
-    # 获取颜色
+    # 计算所有高斯在当前相机观测下的RGB颜色值 or 获取所有高斯的球谐系数，在光栅化阶段转换为RGB颜色值（并行，速度快）
     shs = None
     colors_precomp = None
     if override_color is None:
-        # 默认为None，表示未提供预先计算的颜色，则需计算颜色
+        # 默认，未提供预先计算的颜色，则需后续计算颜色
         if pipe.convert_SHs_python:
-            # 若希望在Python代码中从球谐函数计算颜色，则执行
-            shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2) # 将SH特征的形状调整为（B * N, 3, (max_sh_degree+1)**2）
-            dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))  # 计算相机中心到每个点的方向向量，并归一化
-            dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True) # 计算相机中心到每个点的方向向量，并归一化
-            sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)  # 使用SH特征将方向向量转换为RGB颜色（？找到高斯中心到相机的光线在单位球体上的坐标）
-            colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0) # 将RGB颜色的范围限制在0到1之间（？球谐的傅里叶系数转成RGB颜色）
+            # 若希望在python代码中从球谐函数计算RGB颜色，则计算
+            shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2) # 将所有高斯的球谐系数的维度调整为（N, 3, (max_sh_degree+1)**2）
+            dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))  # 相机中心 到 每个高斯中心的方向向量
+            dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)    # 归一化
+            # 根据球谐系数、当前相机的观测方向，计算所有高斯的RGB颜色值
+            sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
+            colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0) # 将RGB颜色的范围限制在0到1之间
         else:
-            # 默认为False，表示将通过光栅器 从 球谐函数 -> RGB
+            # 默认
             shs = pc.get_features
     else:
         # 提供了预先计算的颜色，则使用它

@@ -56,19 +56,23 @@ C4 = [
 
 def eval_sh(deg, sh, dirs):
     """
-    改变球谐函数 基函数的系数、方向值θ、φ 控制高斯体的颜色
-        deg: 球谐函数的 阶数，这里可能为 0-3
-        sh:  球谐函数的 系数 [..., C, (deg + 1) ** 2]
-        dirs: 单位方向，可以兼容torch/np/jnp，其中jnp.ndarray的单位方向为[..., 3]
+    根据球谐系数、观测方向计算颜色值（可通过改变球谐基函数的系数、方向值θ、φ 控制高斯体的颜色）
+        deg: 球谐阶数，这里可能为 0-3
+        sh:  所有高斯的 球谐系数 [N, 3, (max_deg + 1) ** 2]
+        dirs: 相机中心 到 每个高斯中心的单位向量，可以兼容torch/np/jnp，其中jnp.ndarray的单位方向为[..., 3]
     """
     assert deg <= 4 and deg >= 0    # 规定阶数范围为 [0, 4]
-    coeff = (deg + 1) ** 2          # 计算球谐函数当前阶数的 系数数量
+    coeff = (deg + 1) ** 2          # 计算当前球谐阶数的 系数数量
     assert sh.shape[-1] >= coeff
 
-    # 基函数 * 系数 = 最终的球谐函数
-    result = C0 * sh[..., 0]
+    # 基函数(SH_C0、SH_C1等) * 系数(sh) = 最终的球谐函数
+
+    # 计算所有高斯的0阶系数的颜色值
+    result = C0 * sh[..., 0]    # (N, 3,)
+
     if deg > 0:
-        # 计算单位方向向量
+        # 阶数 > 0，则计算一阶系数的颜色值
+        # 获取单位向量
         # x = sinθ·cosφ, y = sinθ·sinφ, z = cosθ
         x, y, z = dirs[..., 0:1], dirs[..., 1:2], dirs[..., 2:3]
         # 计算1阶球谐函数
@@ -78,6 +82,7 @@ def eval_sh(deg, sh, dirs):
                 C1 * x * sh[..., 3])
 
         if deg > 1:
+            # 阶数 > 1，则计算二阶系数的颜色值
             xx, yy, zz = x * x, y * y, z * z
             xy, yz, xz = x * y, y * z, x * z
             result = (result +
@@ -88,6 +93,7 @@ def eval_sh(deg, sh, dirs):
                     C2[4] * (xx - yy) * sh[..., 8])
 
             if deg > 2:
+                # 阶数 > 2，则计算三阶系数的颜色值
                 result = (result +
                 C3[0] * y * (3 * xx - yy) * sh[..., 9] +
                 C3[1] * xy * z * sh[..., 10] +
