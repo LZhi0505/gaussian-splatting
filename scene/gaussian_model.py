@@ -30,7 +30,7 @@ class GaussianModel:
 
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
             """
-            从 缩放因子、旋转四元数 构建 各3D高斯体的 协方差矩阵
+            从 缩放因子、旋转四元数 构建 所有高斯的 3D协方差矩阵
             """
             L = build_scaling_rotation(scaling_modifier * scaling, rotation)  # 从缩放因子、旋转四元数 计算RS矩阵（反映高斯体的变化），N 3 3
             actual_covariance = L @ L.transpose(1, 2)  # 计算实际的 协方差矩阵 R S S^T R^T
