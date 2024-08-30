@@ -156,22 +156,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             if iteration < opt.densify_until_iter:
-                # 迭代次数 < 增稠停止的迭代次数(默认为15000)，则对3D高斯模型进行增稠和修剪
-                # 跟踪图像空间中的最大半径以进行修剪
-                # 更新 各3D高斯投影到所有相机图像平面的最大半径（visibility_filter：各3D高斯投影到当前相机图像平面上半径>0的mask；max_radii2D：各3D高斯投影到2D图像平面上的最大半径）
+                # 迭代次数 < 增稠停止的迭代次数(默认为15000)，则对3D高斯模型进行增稠和修剪（根据所有高斯投影图像平面的最大半径以进行修剪）
+
+                # 使用各高斯投影到当前相机的最大半径 更新 其投影到所有相机图像平面的最大半径的最高值（max_radii2D：记录的 各高斯投影到所有相机图像平面上的最大半径的最高值；radii：各高斯投影到当前相机图像平面的最大半径；visibility_filter：各3D高斯投影到当前相机图像平面上半径>0的mask）
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                # 在训练过程中累加所有3D高斯投影在2D图像平面各像素上 梯度 的L2范数，与累加次数
-                gaussians.add_densification_stats(
-                    viewspace_point_tensor, visibility_filter
-                )
+
+                # 累加各3D高斯 投影在所有相机图像平面各像素上 梯度 的L2范数，与累加次数
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     # 迭代次数 > 增稠开始的迭代次数(默认为500)，即[600, 14900]每迭代100次进行一次增稠和剪枝
+
+                    # 获取各高斯投影在所有相机图像平面的最大半径的 像素阈值
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None  # <= 3000代为None；[3100, 14900]代为20
+
                     # 增稠和剪枝操作
-                    gaussians.densify_and_prune(
-                        opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold
-                    )
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
 
                 # 每迭代3000次 或 白背景且第一次增稠前(500代)，则重置所有3D高斯的不透明度（ < 0.01），防止相机附近出现伪影
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):

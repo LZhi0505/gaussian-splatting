@@ -244,12 +244,14 @@ def read_images_binary(path_to_model_file):
                 num_bytes=24 * num_points2D,
                 format_char_sequence="ddq" * num_points2D,
             )
+            # 特征点二维坐标
             xys = np.column_stack(
                 [
                     tuple(map(float, x_y_id_s[0::3])),
                     tuple(map(float, x_y_id_s[1::3])),
                 ]
             )
+            # 对应3D点的ID
             point3D_ids = np.array(tuple(map(int, x_y_id_s[2::3])))
             images[image_id] = Image(
                 id=image_id,

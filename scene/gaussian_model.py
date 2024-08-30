@@ -64,7 +64,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)      # 各3D高斯的 缩放因子，控制高斯的形状
         self._rotation = torch.empty(0)     # 各3D高斯的 旋转四元数
         self._opacity = torch.empty(0)      # 各3D高斯的 不透明度（sigmoid前的），控制可见性
-        self.max_radii2D = torch.empty(0)   # 各3D高斯 投影到2D平面上的最大半径
+        self.max_radii2D = torch.empty(0)   # 各3D高斯 投影到所有相机图像平面的最大半径的最高值
 
         self.xyz_gradient_accum = torch.empty(0)    # 3D高斯中心位置 梯度的累积值，当它太大的时候要对高斯体进行分裂，太小代表under要复制
         self.denom = torch.empty(0)                 # 与累积梯度配合使用，表示统计了多少次累积梯度，用于计算每个高斯体的平均梯度时需除以它（denom = denominator，分母）
@@ -189,7 +189,7 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))       # 缩放因子，(N, 3)
         self._rotation = nn.Parameter(rots.requires_grad_(True))        # 单位旋转四元数，(N, 4)
         self._opacity = nn.Parameter(opacities.requires_grad_(True))    # 不透明度，(N, 1)
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 各3D高斯投影到2D平面上的最大半径，初始化为0，(N, )
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")  # 各高斯投影到所有相机图像平面上最大半径的最高值，初始化为0，(N, )
 
     def training_setup(self, training_args):
         """
@@ -452,7 +452,7 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        # 3. 重置 梯度累加值、累加次数、投影到2D平面的最大半径 为0
+        # 3. 重置 梯度累加值、累加次数、投影到所有相机图像平面最大半径的最高值 为0
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")    # N 1
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")                 # N 1
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")              # N
@@ -476,7 +476,7 @@ class GaussianModel:
         # 2. 标记出满足（条件1 && 条件2）的大3D高斯 分裂成 两个小3D高斯
         # 条件1：累加梯度 >= 阈值
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        # 条件2：最大缩放因子 > （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
+        # 条件2：最大缩放因子（最长轴） > （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent)
 
         # 3. 分裂
@@ -513,7 +513,7 @@ class GaussianModel:
         # 1. 标记出满足（条件1 && 条件2）的3D高斯进行克隆
         # 条件1：累加梯度的L2范数 >= 阈值
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
-        # 条件2：最大缩放因子 <= （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
+        # 条件2：最大缩放因子（最长轴） <= （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values <= self.percent_dense * scene_extent)
 
         # 2. 克隆
@@ -531,25 +531,25 @@ class GaussianModel:
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         """
         增稠和剪枝
-            max_grad：       最大梯度阈值，即arguments中的densify_grad_threshold，默认为0.0002，决定是否应基于2D位置梯度对3D高斯进行增稠的阈值
+            max_grad：       最大梯度阈值，即 arguments中的 densify_grad_threshold，默认为0.0002，决定是否应基于2D位置梯度对3D高斯进行增稠的阈值
             min_opacity：    最小不透明度阈值，默认为0.005
             extent：         所有train相机包围圈的半径 * 1.1
             max_screen_size：    <= 3000代为None；[3100, 14900]代为20
         """
-        grads = self.xyz_gradient_accum / self.denom  # 计算从开始训练到当前迭代次数下 所有3D高斯投影在2D图像平面各像素上累加的 梯度 的L2范数 平均每次累加的值，(N,)
+        grads = self.xyz_gradient_accum / self.denom  # 计算从开始训练到当前迭代次数下 各3D高斯投影在所有相机图像平面各像素上累加的 梯度 的L2范数 的平均值，(N,)
         grads[grads.isnan()] = 0.0  # NaN值设为0，保持数值稳定性
 
         # 1. 增稠
-        self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域 克隆 增稠（累加梯度的L2范数 >= 阈值 && 最大缩放因子 <= percent_dense(0.01)*所有train相机包围圈的半径*1.1）
-        self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域 分裂 增稠（累加梯度 >= 阈值 && 最大缩放因子 > percent_dense*所有train相机包围圈的半径*1.1）
+        self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域 克隆 增稠（累加梯度的L2范数 >= 阈值 && 最长轴 <= percent_dense(0.01)*所有train相机包围圈的半径*1.1）
+        self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域 分裂 增稠（累加梯度 >= 阈值 && 最长轴 > percent_dense*所有train相机包围圈的半径*1.1）
 
         # 2. 剪枝（不透明度 < 最低阈值 || 3D高斯太大 || 3D高斯针状）
         # 条件1：不透明度 < 最低阈值0.005
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
-            # 条件2：[3100, 14900]代，各3D高斯投影到所有2D图像平面上的最大半径 > 20个像素（在视图空间中太大要被去除）
+            # 条件2：[3100, 14900]代，各3D高斯投影到所有相机图像平面上最大半径的最高值 > 20个像素（在视图空间中太大要被去除）
             big_points_vs = self.max_radii2D > max_screen_size
-            # 条件3：[3100, 14900]代，各3D高斯的最大缩放因子 > 0.1*所有train相机包围圈的半径*1.1（在世界空间中太大或针状要被去除）
+            # 条件3：[3100, 14900]代，各3D高斯的最大缩放因子（最长轴） > 0.1*所有train相机包围圈的半径*1.1（在世界空间中太大或针状要被去除）
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             # 逻辑或
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
