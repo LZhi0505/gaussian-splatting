@@ -73,8 +73,8 @@ def getNerfppNorm(cam_info):
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
     '''
-        cam_extrinsics: 存储每张图片相机的外参类Imgae 的字典
-        cam_intrinsics: 存储每张图片相机的内参类Camera 的字典
+        cam_extrinsics: 存储所有相机的 外参的字典，每个元素包括：id 图片ID、qvec W2C的旋转四元数、tvec W2C的平移向量、camera_id 相机ID、name 图像名、xys 所有特征点的像素坐标、point3D_ids 所有特征点对应3D点的ID（特征点没有生成3D点的ID则为-1）
+        cam_intrinsics: 存储所有相机的 内参的字典，每个元素包括：id 相机ID、model 相机模型ID、width、height、params 内参数组
         images_folder: 保存原图的文件夹路径
     '''
     # 初始化存储相机信息类CameraInfo对象的列表
