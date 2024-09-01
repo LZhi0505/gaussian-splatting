@@ -72,7 +72,7 @@ def get_scales(key, cameras, images, points3d_ordered, args):
         t_mono = np.median(invmonodepth)    # 深度估计逆深度 中值
         s_mono = np.mean(np.abs(invmonodepth - t_mono))
 
-        scale = s_colmap / s_mono
+        scale = s_colmap / s_mono   # 深度图 到 COLMAP的映射关系
         offset = t_colmap - t_mono * scale
     else:
         scale = 0
@@ -97,6 +97,7 @@ if __name__ == '__main__':
     points3d_ordered = np.zeros([pts_indices.max()+1, 3])
     points3d_ordered[pts_indices] = pts_xyzs
 
+    # 计算每张 估计的逆深度图的 sclae 和 offset（由深度图到COLMAP）
     # 并行计算 深度估计的逆深度 对齐到 COLMAP尺度的 scale和offset
     # depth_param_list = [get_scales(key, cam_intrinsics, images_metas, points3d_ordered, args) for key in images_metas]
     depth_param_list = Parallel(n_jobs=-1, backend="threading")(
