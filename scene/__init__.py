@@ -87,7 +87,7 @@ class Scene:
         # 所有train相机到它们的中心点的 最大距离 * 1.1
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
-        # 4. 调整图片分辨率，并根据train、test相机info(包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height)创建 相机
+        # 4. 调整图片分辨率，并根据train、test相机info创建 相机 对象
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)

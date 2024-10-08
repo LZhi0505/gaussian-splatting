@@ -21,6 +21,9 @@ def inverse_sigmoid(x):
 
 
 def PILtoTorch(pil_image, resolution):
+    """
+    调整图像分辨率，转为tensor，并归一化
+    """
     resized_image_PIL = pil_image.resize(resolution)
     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0  # 归一化
     if len(resized_image.shape) == 3:

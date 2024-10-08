@@ -70,8 +70,8 @@ def getNerfppNorm(cam_info):
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     '''
-        cam_extrinsics: 存储所有相机的 外参的字典，每个元素包括：id 图片ID、qvec W2C的旋转四元数、tvec W2C的平移向量、camera_id 相机ID、name 图像名、xys 所有特征点的像素坐标、point3D_ids 所有特征点对应3D点的ID（特征点没有生成3D点的ID则为-1）
-        cam_intrinsics: 存储所有相机的 内参的字典，每个元素包括：id 相机ID、model 相机模型ID、width、height、params 内参数组
+        cam_extrinsics: 存储所有相机的 外参的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
+        cam_intrinsics: 存储所有相机的 内参的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
         images_folder: 保存原图的文件夹路径
     '''
     # 初始化存储相机信息类CameraInfo对象的列表
@@ -112,7 +112,10 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
         # PIL.Image读取的为RGB格式，OpenCV读取的为BGR格式
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        image_path = os.path.join(images_folder, extr.name)
+        if not os.path.exists(image_path):
+            continue
+
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
 
@@ -159,14 +162,14 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         path:   source_path
         images: 'images'
         eval:   是否为eval模式
-        llffhold: 默认为8
+        llffhold: 采样频次，默认为8，即每8张中取第1张
     '''
 
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
-        cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
-        cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+        cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file) # 存储所有相机 外参信息 的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
+        cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file) # 存储所有相机 内参信息 的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
     except:
         # 如果bin文件读取失败，尝试读取txt格式的相机外参和内参文件
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
@@ -176,9 +179,10 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
 
     # 存储原图片的文件夹名，默认为'images'，要从中读取图片
     reading_dir = "images" if images == None else images
-    # 根据每个相机的内、外参，构建CameraInfo类的对象 (包含旋转矩阵、平移向量、视场角、图像数据、图片路径、图片名、宽度、高度)，存储cam_infos_unsorted列表中
+
+    # 创建所有相机的Info类对象，存储到 cam_infos_unsorted列表中
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
-    # 根据图片名称对相机信息进行排序，以保证顺序一致性
+    # 根据图片名称排序，以保证顺序一致性
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     # 根据是否eval，将相机分为训练集和测试集

@@ -13,12 +13,14 @@ from scene.cameras import Camera
 import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
+import sys
 
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale):
     """
     调整当前相机对应图像的分辨率，并根据当前相机的info创建相机（包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height）
+        is_test_dataset: 是否是测试相机数据集
     """
     orig_w, orig_h = cam_info.image.size
 
@@ -60,14 +62,20 @@ def loadCam(args, id, cam_info, resolution_scale):
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     '''
+    遍历每个camera_info，创建相机对象，并添加到camera_list中
         cam_infos:          train或test相机info列表
         resolution_scale:   分辨率倍率
         args:               更新后的ModelParams()中的参数
+        is_test_dataset:    是否是测试相机数据集
     '''
     camera_list = []
-    # 遍历每个camera_info（包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height）
     for id, c in enumerate(cam_infos):
+        sys.stdout.write('\r')
+        sys.stdout.write("\tReading camera {}/{}".format(id + 1, len(cam_infos)))
+        sys.stdout.flush()
+
         camera_list.append(loadCam(args, id, c, resolution_scale))
+    sys.stdout.write('\n')
 
     return camera_list
 
