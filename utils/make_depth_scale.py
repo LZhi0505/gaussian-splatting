@@ -8,12 +8,13 @@ from read_write_binary import *
 
 def get_scales(key, cameras, images, points3d_ordered, args):
     """
-    计算当前相机 估计的深度图 对齐到 COLMAP尺度的 scale 和 offset。返回一个字典，包含：图像名，scale，offset
+    计算当前相机下，估计的深度图 对齐到 COLMAP尺度的 scale 和 offset。返回一个字典，包含：图像名，scale，offset
         key：    当前相机索引
         cameras：存储 所有相机 内参信息的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
         images： 存储 所有相机 外参信息的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
         points3d_ordered：   按3D点的id顺序存储所有3D点的世界坐标 的数组，N 3
     """
+    # 计算COLMAP点云在相机坐标系下的逆深度
     image_meta = images[key]    # 当前相机外参
     cam_intrinsic = cameras[image_meta.camera_id]   # 内参
 
@@ -34,10 +35,10 @@ def get_scales(key, cameras, images, points3d_ordered, args):
     R = qvec2rotmat(image_meta.qvec)    # W2C的旋转矩阵
     pts = np.dot(pts, R.T) + image_meta.tvec    # 有效3D点在相机坐标系下的坐标
 
-    # 相机坐标下 COLMAP计算的 稀疏3D点的 逆深度
+    # 相机坐标下 COLMAP计算的 有效3D点的 逆深度（逆深度数值稳定，可以更方便地处理较小的深度差异）
     invcolmapdepth = 1. / pts[..., 2]
 
-    # 读取png格式存储的 深度估计深度图（相对深度模式，估计的直接是 逆深度）
+    # 读取png格式的 深度估计深度图（相对深度模式，估计的直接是 逆深度）
     n_remove = len(image_meta.name.split('.')[-1]) + 1
     invmonodepthmap = cv2.imread(f"{args.depths_dir}/{image_meta.name[:-n_remove]}.png", cv2.IMREAD_UNCHANGED)  # (H,W,3)
 
@@ -46,12 +47,12 @@ def get_scales(key, cameras, images, points3d_ordered, args):
     
     if invmonodepthmap.ndim != 2:
         invmonodepthmap = invmonodepthmap[..., 0]   # (H,W)
-    invmonodepthmap = invmonodepthmap.astype(np.float32) / (2**16)  # 归一化
+    invmonodepthmap = invmonodepthmap.astype(np.float32) / (2**16)  # 转换为float32，并归一化到[0, 1]
 
     s = invmonodepthmap.shape[0] / cam_intrinsic.height # 原始深度图像 / 参与COLMAP计算的图像 的尺寸的比例
 
     maps = (valid_xys * s).astype(np.float32)   # COLMAP图像尺寸比例调整到原始深度图尺寸的 有效3D点对应特征点的像素坐标
-    # 尺寸比例调整后 特征点有效mask，剔除 像素坐标超出范围 与 对应深度值<0 的点
+    # 尺寸比例调整后 特征点有效mask，满足：像素坐标在图像范围内 且 COLMAP深度值>0
     valid = (
         (maps[..., 0] >= 0) * 
         (maps[..., 1] >= 0) * 
@@ -72,6 +73,7 @@ def get_scales(key, cameras, images, points3d_ordered, args):
         t_mono = np.median(invmonodepth)    # 深度估计逆深度 中值
         s_mono = np.mean(np.abs(invmonodepth - t_mono))
 
+        # 深度估计 到 COLMAP尺度的映射参数
         scale = s_colmap / s_mono
         offset = t_colmap - t_mono * scale
     else:
@@ -88,12 +90,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # 获取COLMAP估计的 相机内参、相机外参、点云数据
+    # cam_intrinsics：存储 所有相机 内参信息的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
+    # images_metas：  存储 所有相机 外参信息的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
+    # points3d：      存储 所有点云信息的字典，每个元素包括：id(3D点ID)、xyz(世界坐标)、rgb(颜色值)、error(重投影误差)、image_ids(该点在哪些图像中可见的 图像ID列表)、point2D_idxs(在可见图像中的2D点索引)
     cam_intrinsics, images_metas, points3d = read_model(os.path.join(args.base_dir, "sparse", "0"), ext=f".{args.model_type}")
 
-    # 获取每个3D点的 id、世界坐标
+    # 获取每个3D点的 ID、世界坐标
     pts_indices = np.array([points3d[key].id for key in points3d])
     pts_xyzs = np.array([points3d[key].xyz for key in points3d])
-    # 按3D点的id顺序存储所有3D点的世界坐标，N 3
+    # 按3D点的ID顺序存储所有3D点的世界坐标，N 3
     points3d_ordered = np.zeros([pts_indices.max()+1, 3])
     points3d_ordered[pts_indices] = pts_xyzs
 
