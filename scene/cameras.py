@@ -20,10 +20,7 @@ class Camera(nn.Module):
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda"
                  ):
         """
-            invdepthmap: 单目深度估计的相对深度图，是逆深度，numpy
-            train_test_exp:  是否是 曝光补偿模式，所有相机都为 训练相机
-            is_test_dataset: 是否是测试相机数据集
-            is_test_view:    该相机图片名 是否在 测试相机图片名列表中
+            image:          原始RGB图像数据，numpy
         """
         super(Camera, self).__init__()
 

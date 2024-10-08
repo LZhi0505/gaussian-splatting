@@ -72,7 +72,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     '''
         cam_extrinsics: 存储所有相机的 外参的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
         cam_intrinsics: 存储所有相机的 内参的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
-        images_folder: 保存原图的文件夹路径
+        images_folder: 保存RGB图的文件夹路径
     '''
     # 初始化存储相机信息类CameraInfo对象的列表
     cam_infos = []
@@ -160,7 +160,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
     '''
     加载COLMAP的结果中的二进制相机外参文件imags.bin 和 内参文件cameras.bin
         path:   source_path
-        images: 'images'
+        images: "images"
         eval:   是否为eval模式
         llffhold: 采样频次，默认为8，即每8张中取第1张
     '''

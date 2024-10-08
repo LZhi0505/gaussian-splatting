@@ -35,13 +35,12 @@ def PILtoTorch(pil_image, resolution):
 
 def get_expon_lr_func(lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000):
     """
-    创建一个学习率调整器，返回helper(step)函数，根据训练进度动态调整学习率。step=0返回lr_init，step=max返回lr_final，其余步数使用对数线性插值（指数衰减）
+    创建并返回一个学习率调整器 helper，并根据当前迭代次数 step动态调整学习率。step = 0返回 lr_init，step = max返回 lr_final，其余步数使用对数线性插值（指数衰减）
         lr_init:    初始学习率
         lr_final:   最终学习率
         lr_delay_steps: 学习率延迟步数，若>0，则学习率将被lr_delay_mult的平滑函数缩放，使得lr_init在优化开始时为lr_init * lr_delay_mult；当step>lr_delay_steps时，学习率将被缓慢恢复到正常学习率
         lr_delay_mult:  学习率延迟乘数，用于计算初始延迟学习率
         max_steps:  调整学习率所需的最大步数
-        return: 根据当前步数返回调整后的学习率
     """
 
     def helper(step):

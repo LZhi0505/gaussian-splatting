@@ -108,7 +108,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # 如果到达要debug的迭代次数，则启用debu模式
             pipe.debug = True
 
-        # 参数设置了随机背景颜色，则随机生成；否则使用白色或黑色（默认）
+        # 参数设置了随机背景颜色，则随机生成；否则为 白色 或 黑色（默认）
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         # 使用可微光栅化器获取当前train相机视角下的渲染数据
@@ -120,13 +120,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             render_pkg["visibility_filter"],
             render_pkg["radii"],
         )
-
-        # 计算渲染图像与真实图像之间的损失
-        # 替换为一张一张读取
-        # gt_image_path = viewpoint_cam.image_path
-        # gt_image = Image.open(gt_image_path)
-        # gt_image = (torch.from_numpy(np.array(gt_image)) / 255.0).permute(2, 0, 1)
-        # gt_image = gt_image.clamp(0.0, 1.0).to(viewpoint_cam.data_device)
 
         gt_image = viewpoint_cam.original_image.cuda()
 
