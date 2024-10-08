@@ -87,10 +87,11 @@ class Scene:
         # 所有train相机到它们的中心点的 最大距离 * 1.1
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
-        # 4. 调整图片分辨率，并根据train、test相机info(包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height)创建 相机
+        # 4. 调整图片分辨率，并根据train、test相机info创建 相机 对象
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args, False)
+
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, True)
 
@@ -110,6 +111,8 @@ class Scene:
         """
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+
+        #
         exposure_dict = {
             image_name: self.gaussians.get_exposure_from_name(image_name).detach().cpu().numpy().tolist()
             for image_name in self.gaussians.exposure_mapping

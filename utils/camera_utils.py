@@ -14,18 +14,22 @@ import numpy as np
 from utils.graphics_utils import fov2focal
 from PIL import Image
 import cv2
+import sys
 
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale, is_test_dataset):
     """
     调整当前相机对应图像的分辨率，并根据当前相机的info创建相机（包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height）
+        is_test_dataset: 是否是测试相机数据集
     """
-    image = Image.open(cam_info.image_path)
+    # 读取RGB图
+    image = Image.open(cam_info.image_path) # PIL.Image读取的为RGB格式，OpenCV读取的为BGR格式
 
+    # 读取深度图
     if cam_info.depth_path != "":
         try:
-            invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / float(2**16)
+            invdepthmap = cv2.imread(cam_info.depth_path, -1).astype(np.float32) / float(2**16) # 归一化
         except FileNotFoundError:
             print(f"Error: The depth file at path '{cam_info.depth_path}' was not found.")
             raise
@@ -39,6 +43,7 @@ def loadCam(args, id, cam_info, resolution_scale, is_test_dataset):
         invdepthmap = None
 
     orig_w, orig_h = image.size
+
     # 1. 计算下采样后的图像尺寸
     if args.resolution in [1, 2, 4, 8]:
         # 计算下采样后的图像尺寸 [1, 1/2, 1/4, 1/8]
@@ -70,14 +75,20 @@ def loadCam(args, id, cam_info, resolution_scale, is_test_dataset):
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args, is_test_dataset):
     '''
+    遍历每个camera_info，创建相机对象，并添加到camera_list中
         cam_infos:          train或test相机info列表
         resolution_scale:   分辨率倍率
         args:               更新后的ModelParams()中的参数
+        is_test_dataset:    是否是测试相机数据集
     '''
     camera_list = []
-    # 遍历每个camera_info（包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height）
     for id, c in enumerate(cam_infos):
+        sys.stdout.write('\r')
+        sys.stdout.write("\tReading camera {}/{}".format(id + 1, len(cam_infos)))
+        sys.stdout.flush()
+
         camera_list.append(loadCam(args, id, c, resolution_scale, is_test_dataset))
+    sys.stdout.write('\n')
 
     return camera_list
 

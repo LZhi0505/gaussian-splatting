@@ -22,6 +22,12 @@ class Camera(nn.Module):
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  train_test_exp = False, is_test_dataset = False, is_test_view = False
                  ):
+        """
+            invdepthmap: 单目深度估计的相对深度图，是逆深度，numpy
+            train_test_exp:  是否是 曝光补偿模式，所有相机都为 训练相机
+            is_test_dataset: 是否是测试相机数据集
+            is_test_view:    该相机图片名 是否在 测试相机图片名列表中
+        """
         super(Camera, self).__init__()
 
         self.uid = uid
@@ -39,40 +45,50 @@ class Camera(nn.Module):
             print(f"[Warning] Custom device {data_device} failed, fallback to default cuda device" )
             self.data_device = torch.device("cuda")
 
+        # 调整图像分辨率，转为tensor，并归一化，C H W
         resized_image_rgb = PILtoTorch(image, resolution)
         gt_image = resized_image_rgb[:3, ...]
+
+        # 计算图像mask
         self.alpha_mask = None
         if resized_image_rgb.shape[0] == 4:
-            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
+            self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)  # H W
         else:
-            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
+            self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device)) # 全1，H W
 
         if train_test_exp and is_test_view:
+            # 曝光补偿模式 且 是测试相机
             if is_test_dataset:
-                self.alpha_mask[..., :self.alpha_mask.shape[-1] // 2] = 0
+                # 是测试数据集
+                self.alpha_mask[..., :self.alpha_mask.shape[-1] // 2] = 0   # 左侧置0
             else:
-                self.alpha_mask[..., self.alpha_mask.shape[-1] // 2:] = 0
+                self.alpha_mask[..., self.alpha_mask.shape[-1] // 2:] = 0   # 右侧置0
 
         self.original_image = gt_image.clamp(0.0, 1.0).to(self.data_device)
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]
 
+        # 对齐深度图，调整分辨率，转为tensor，已归一化
         self.invdepthmap = None
         self.depth_reliable = False
         if invdepthmap is not None and depth_params is not None and depth_params["scale"] > 0:
-            invdepthmapScaled = invdepthmap * depth_params["scale"] + depth_params["offset"]
-            invdepthmapScaled = cv2.resize(invdepthmapScaled, resolution)
+            # 有深度图 且 需要进行尺度对齐
+            invdepthmapScaled = invdepthmap * depth_params["scale"] + depth_params["offset"]    # 深度估计图 对齐 到COLMAP尺度
+
+            invdepthmapScaled = cv2.resize(invdepthmapScaled, resolution)   # 调整分辨率
             invdepthmapScaled[invdepthmapScaled < 0] = 0
             if invdepthmapScaled.ndim != 2:
-                invdepthmapScaled = invdepthmapScaled[..., 0]
+                invdepthmapScaled = invdepthmapScaled[..., 0]   # H W
             self.invdepthmap = torch.from_numpy(invdepthmapScaled[None]).to(self.data_device)
 
+            # 计算深度图mask
             if self.alpha_mask is not None:
                 self.depth_mask = self.alpha_mask.clone()
             else:
                 self.depth_mask = torch.ones_like(self.invdepthmap > 0)
 
             if depth_params["scale"] < 0.2 * depth_params["med_scale"] or depth_params["scale"] > 5 * depth_params["med_scale"]:
+                # 计算的深度对齐尺度 不在0.2 ~ 5倍的med_scale范围内，则该深度图不可靠，深度mask置全0
                 self.depth_mask *= 0
             else:
                 self.depth_reliable = True
