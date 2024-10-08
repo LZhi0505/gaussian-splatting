@@ -35,7 +35,7 @@ class CameraInfo(NamedTuple):
     depth_path: str
     width: int
     height: int
-    is_test: bool
+    is_test: bool   # 是否是测试相机
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -73,9 +73,12 @@ def getNerfppNorm(cam_info):
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
     '''
-        cam_extrinsics: 存储所有相机的 外参的字典，每个元素包括：id 图片ID、qvec W2C的旋转四元数、tvec W2C的平移向量、camera_id 相机ID、name 图像名、xys 所有特征点的像素坐标、point3D_ids 所有特征点对应3D点的ID（特征点没有生成3D点的ID则为-1）
-        cam_intrinsics: 存储所有相机的 内参的字典，每个元素包括：id 相机ID、model 相机模型ID、width、height、params 内参数组
+        cam_extrinsics: 存储所有相机的 外参的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
+        cam_intrinsics: 存储所有相机的 内参的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
+        depths_params:
         images_folder: 保存原图的文件夹路径
+        depths_folder:
+        test_cam_names_list: 测试相机图片名列表
     '''
     # 初始化存储相机信息类CameraInfo对象的列表
     cam_infos = []
@@ -114,7 +117,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
             # 如果不是以上两种模型，抛出错误
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-        n_remove = len(extr.name.split('.')[-1]) + 1
+        n_remove = len(extr.name.split('.')[-1]) + 1    # 图像名中 格式名称+'.'的个数
         depth_params = None
         if depths_params is not None:
             try:
@@ -122,11 +125,15 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
             except:
                 print("\n", key, "not found in depths_params")
 
-        image_path = os.path.join(images_folder, extr.name) # PIL.Image读取的为RGB格式，OpenCV读取的为BGR格式
+        image_path = os.path.join(images_folder, extr.name)
+        if not os.path.exists(image_path):
+            continue
+
         image_name = extr.name
         depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
 
-        # 创建相机信息类CameraInfo对象 (包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height)，并添加到列表cam_infos中
+        # 创建相机信息类CameraInfo对象，并添加到列表cam_infos中
+        # 这里添加的 width、heigth 是COLMAP时的内参中的
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path,
                               width=width, height=height, is_test=image_name in test_cam_names_list)
@@ -170,14 +177,15 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         path:   source_path
         images: 'images'
         eval:   是否为eval模式
-        llffhold: 默认为8
+        train_test_exp: 是否考虑 光照补偿
+        llffhold: 采样频次，默认为8，即每8张中取第1张
     '''
 
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
-        cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
-        cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+        cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file) # 存储所有相机 外参信息 的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
+        cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file) # 存储所有相机 内参信息 的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
     except:
         # 如果bin文件读取失败，尝试读取txt格式的相机外参和内参文件
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
@@ -210,11 +218,12 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     # 根据是否eval，将相机分为训练集和测试集
     if eval:
         if "360" in path:
+            # MipNeRF360 数据集，则llffhold = 8
             llffhold = 8
         if llffhold:
-            # 若要评测，则每llffhold张图片取一张作为测试集
+            # 若要评测，则每llffhold张取1张将图片名存入到 测试相机图片名列表中
             print("------------LLFF HOLD-------------")
-            cam_names = [cam_extrinsics[cam_id].name for cam_id in cam_extrinsics]
+            cam_names = [cam_extrinsics[cam_id].name for cam_id in cam_extrinsics]  # 遍历每个相机外参，获取所有图像的 图片名
             cam_names = sorted(cam_names)
             test_cam_names_list = [name for idx, name in enumerate(cam_names) if idx % llffhold == 0]
         else:
@@ -226,7 +235,8 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
 
     # 存储原图片的文件夹名，默认为'images'，要从中读取图片
     reading_dir = "images" if images == None else images
-    # 根据每个相机的内、外参，构建CameraInfo类的对象 (包含旋转矩阵、平移向量、视场角、图像数据、图片路径、图片名、宽度、高度)，存储cam_infos_unsorted列表中
+
+    # 创建所有相机的Info类对象，存储到 cam_infos_unsorted列表中
     cam_infos_unsorted = readColmapCameras(
         cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, depths_params=depths_params,
         images_folder=os.path.join(path, reading_dir),
@@ -234,6 +244,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     # 根据图片名称排序，以保证顺序一致性
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
+    # 如果是曝光补偿模式 或 该相机info不在测试相机列表中，则放入训练相机列表
     train_cam_infos = [c for c in cam_infos if train_test_exp or not c.is_test]
     test_cam_infos = [c for c in cam_infos if c.is_test]
 

@@ -374,7 +374,7 @@ def read_points3D_binary(path_to_model_file):
             point3D_id = binary_point_line_properties[0]
             xyz = np.array(binary_point_line_properties[1:4])
             rgb = np.array(binary_point_line_properties[4:7])
-            error = np.array(binary_point_line_properties[7])
+            error = np.array(binary_point_line_properties[7])   # 重投影误差
             track_length = read_next_bytes(
                 fid, num_bytes=8, format_char_sequence="Q"
             )[0]
@@ -383,8 +383,8 @@ def read_points3D_binary(path_to_model_file):
                 num_bytes=8 * track_length,
                 format_char_sequence="ii" * track_length,
             )
-            image_ids = np.array(tuple(map(int, track_elems[0::2])))
-            point2D_idxs = np.array(tuple(map(int, track_elems[1::2])))
+            image_ids = np.array(tuple(map(int, track_elems[0::2])))    # 该点在哪些图片中出现过
+            point2D_idxs = np.array(tuple(map(int, track_elems[1::2]))) # 这些点在哪些图片中对应的二维像素坐标
             points3D[point3D_id] = Point3D(
                 id=point3D_id,
                 xyz=xyz,
