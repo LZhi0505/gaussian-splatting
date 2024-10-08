@@ -23,7 +23,9 @@ class Camera(nn.Module):
                  train_test_exp = False, is_test_dataset = False, is_test_view = False
                  ):
         """
-            invdepthmap: 单目深度估计的相对深度图，是逆深度，numpy
+            depth_params:   当前相机的 逆深度对齐参数
+            image:          原始RGB图像数据，numpy
+            invdepthmap:    相对深度模式下的原始 逆深度数据，numpy
             train_test_exp:  是否是 曝光补偿模式，所有相机都为 训练相机
             is_test_dataset: 是否是测试相机数据集
             is_test_view:    该相机图片名 是否在 测试相机图片名列表中
@@ -68,12 +70,12 @@ class Camera(nn.Module):
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]
 
-        # 对齐深度图，调整分辨率，转为tensor，已归一化
+        # 对齐逆深度图，调整分辨率，转为tensor，已归一化
         self.invdepthmap = None
         self.depth_reliable = False
         if invdepthmap is not None and depth_params is not None and depth_params["scale"] > 0:
-            # 有深度图 且 需要进行尺度对齐
-            invdepthmapScaled = invdepthmap * depth_params["scale"] + depth_params["offset"]    # 深度估计图 对齐 到COLMAP尺度
+            # 有逆深度图 且 需要进行尺度对齐
+            invdepthmapScaled = invdepthmap * depth_params["scale"] + depth_params["offset"]    # 逆深度图 对齐 到COLMAP尺度
 
             invdepthmapScaled = cv2.resize(invdepthmapScaled, resolution)   # 调整分辨率
             invdepthmapScaled[invdepthmapScaled < 0] = 0
@@ -88,7 +90,7 @@ class Camera(nn.Module):
                 self.depth_mask = torch.ones_like(self.invdepthmap > 0)
 
             if depth_params["scale"] < 0.2 * depth_params["med_scale"] or depth_params["scale"] > 5 * depth_params["med_scale"]:
-                # 计算的深度对齐尺度 不在0.2 ~ 5倍的med_scale范围内，则该深度图不可靠，深度mask置全0
+                # 计算的深度对齐尺度 不在0.2 ~ 5倍的scale中值范围内，则该深度图不可靠，深度mask置 全0
                 self.depth_mask *= 0
             else:
                 self.depth_reliable = True

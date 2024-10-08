@@ -151,7 +151,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         # plt.figure(figsize=(8, 6))
         # plt.imshow(rendered_image.permute(1, 2, 0).detach().cpu().numpy(), cmap='viridis')
         # plt.colorbar()
-        # plt.title('Rendered Normal Map')
+        # plt.title('Rendered Image Map')
         # plt.show()
 
         # plt.figure(figsize=(8, 6))

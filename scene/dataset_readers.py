@@ -29,7 +29,7 @@ class CameraInfo(NamedTuple):
     T: np.array
     FovY: np.array
     FovX: np.array
-    depth_params: dict
+    depth_params: dict  # 逆深度对齐参数
     image_path: str
     image_name: str
     depth_path: str
@@ -74,10 +74,10 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
     '''
         cam_extrinsics: 存储所有相机的 外参的字典，每个元素包括：id(图片ID)、qvec(W2C的旋转四元数)、tvec(W2C的平移向量)、camera_id(相机ID)、name(图像名)、xys(所有特征点的像素坐标)、point3D_ids(所有特征点对应3D点的ID，特征点没有生成3D点的ID则为-1)
         cam_intrinsics: 存储所有相机的 内参的字典，每个元素包括：id(相机ID)、model(相机模型ID)、width、height、params(内参数组)
-        depths_params:
-        images_folder: 保存原图的文件夹路径
-        depths_folder:
-        test_cam_names_list: 测试相机图片名列表
+        depths_params:  逆深度图对齐的 有效参数
+        images_folder:  保存RGB图的文件夹路径
+        depths_folder:  保存逆深度图的文件夹路径
+        test_cam_names_list: 测试相机 图片名列表
     '''
     # 初始化存储相机信息类CameraInfo对象的列表
     cam_infos = []
@@ -120,7 +120,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         depth_params = None
         if depths_params is not None:
             try:
-                depth_params = depths_params[extr.name[:-n_remove]]
+                depth_params = depths_params[extr.name[:-n_remove]] # 当前相机的 逆深度对齐参数
             except:
                 print("\n", key, "not found in depths_params")
 
@@ -174,7 +174,8 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     '''
     加载COLMAP的结果中的二进制相机外参文件imags.bin 和 内参文件cameras.bin
         path:   source_path
-        images: 'images'
+        images: "images"
+        depths: 存储深度图文件夹的相对路径，参照"images"，默认为 ""
         eval:   是否为eval模式
         train_test_exp: 是否考虑 光照补偿
         llffhold: 采样频次，默认为8，即每8张中取第1张
@@ -192,18 +193,24 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
+    # 读取逆深度图对齐的 有效参数
+    # 以字典形式存储的 前期计算的 深度估计逆深度 对齐到 COLMAP尺度的 scale和offset的文件。key: 图像名，value: 一个字典，包含scale、offset
     depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
     ## if depth_params_file isnt there AND depths file is here -> throw error
     depths_params = None
     if depths != "":
+        # 传入了深度图路径，则尝试读取尺度对齐参数
         try:
             with open(depth_params_file, "r") as f:
                 depths_params = json.load(f)
+            # 获取所有图像的 scale
             all_scales = np.array([depths_params[key]["scale"] for key in depths_params])
+            # scale的 中值
             if (all_scales > 0).sum():
                 med_scale = np.median(all_scales[all_scales > 0])
             else:
                 med_scale = 0
+
             for key in depths_params:
                 depths_params[key]["med_scale"] = med_scale
 
@@ -220,12 +227,13 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             # MipNeRF360 数据集，则llffhold = 8
             llffhold = 8
         if llffhold:
-            # 若要评测，则每llffhold张取1张将图片名存入到 测试相机图片名列表中
+            # 每llffhold张取1张将图片名存入到 测试相机图片名列表中
             print("------------LLFF HOLD-------------")
             cam_names = [cam_extrinsics[cam_id].name for cam_id in cam_extrinsics]  # 遍历每个相机外参，获取所有图像的 图片名
             cam_names = sorted(cam_names)
             test_cam_names_list = [name for idx, name in enumerate(cam_names) if idx % llffhold == 0]
         else:
+            # 从txt文件读取测试相机的 图片名
             with open(os.path.join(path, "sparse/0", "test.txt"), 'r') as file:
                 test_cam_names_list = [line.strip() for line in file]
     else:

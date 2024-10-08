@@ -67,7 +67,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
 
-    # 通过学习率调整器调整深度L1损失的权重
+    # 创建一个学习率调整器，用其调整不同迭代次数下的 深度loss的权重
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
     viewpoint_stack = scene.getTrainCameras().copy()
@@ -115,7 +115,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # 如果到达要debug的迭代次数，则启用debu模式
             pipe.debug = True
 
-        # 参数设置了随机背景颜色，则随机生成；否则使用白色或黑色（默认）
+        # 参数设置了随机背景颜色，则随机生成；否则为 白色 或 黑色（默认）
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         # 使用可微光栅化器获取当前train相机视角下的渲染数据
@@ -128,30 +128,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             render_pkg["radii"],
         )
 
-        # 计算渲染图像与真实图像之间的损失
-        # 替换为一张一张读取
-        # gt_image_path = viewpoint_cam.image_path
-        # gt_image = Image.open(gt_image_path)
-        # gt_image = (torch.from_numpy(np.array(gt_image)) / 255.0).permute(2, 0, 1)
-        # gt_image = gt_image.clamp(0.0, 1.0).to(viewpoint_cam.data_device)
-
         gt_image = viewpoint_cam.original_image.cuda()
 
         Ll1 = l1_loss(image, gt_image)
         ssim_value = ssim(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
-        # Depth regularization
+        # 深度约束
         Ll1depth_pure = 0.0
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
-            # 在当前迭代次数下，深度L1损失>0 且
+            # 在当前迭代次数下，深度loss权重>0 且 当前深度估计的 逆深度图 可靠
             invDepth = render_pkg["depth"]
-            mono_invdepth = viewpoint_cam.invdepthmap.cuda()
-            depth_mask = viewpoint_cam.depth_mask.cuda()
+
+            mono_invdepth = viewpoint_cam.invdepthmap.cuda()    # 当前相机对应的 已尺度对齐的逆深度图
+            depth_mask = viewpoint_cam.depth_mask.cuda()    # 深度图mask
 
             Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
             Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
+
             loss += Ll1depth
+
             Ll1depth = Ll1depth.item()
         else:
             Ll1depth = 0
