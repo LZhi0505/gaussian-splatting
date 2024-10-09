@@ -112,7 +112,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         # 使用可微光栅化器获取当前train相机视角下的渲染数据
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, return_depth=True, return_normal=True, use_trained_exp=dataset.train_test_exp)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, return_depth=True, return_normal=True)
         # 分别为：渲染图像，屏幕空间坐标，各3D高斯投影到当前相机图像平面上半径>0的mask，各3D高斯投影到当前相机图像平面上的半径
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],

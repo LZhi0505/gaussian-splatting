@@ -99,7 +99,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         # 提供了预先计算的颜色，则使用它
         colors_precomp = override_color
 
-    # 调用光栅器将 在视野范围内的3D高斯投影到图像平面上，获取渲染图像 和 每个3D高斯在图像平面上的半径(radii)
+    # 调用光栅器将 在视野范围内的3D高斯投影到图像平面上，获取渲染的RGB图像 和 投影在当前相机图像平面上的最大半径 数组
     rendered_image, radii = rasterizer(
         means3D = means3D,
         means2D = means2D,
