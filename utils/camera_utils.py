@@ -20,7 +20,6 @@ WARNED = False
 def loadCam(args, id, cam_info, resolution_scale):
     """
     调整当前相机对应图像的分辨率，并根据当前相机的info创建相机（包含R、T、FovY、FovX、图像数据image、image_path、image_name、width、height）
-        is_test_dataset: 是否是测试相机数据集
     """
     orig_w, orig_h = cam_info.image.size
 
@@ -66,7 +65,6 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
         cam_infos:          train或test相机info列表
         resolution_scale:   分辨率倍率
         args:               更新后的ModelParams()中的参数
-        is_test_dataset:    是否是测试相机数据集
     '''
     camera_list = []
     for id, c in enumerate(cam_infos):
