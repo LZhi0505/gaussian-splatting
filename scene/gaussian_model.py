@@ -467,14 +467,14 @@ class GaussianModel:
             scene_extent：   所有train相机包围圈的半径 * 1.1
             N：              代表1个3D高斯分裂为N个，默认为2
         """
-        n_init_points = self.get_xyz.shape[0]   # 当前3D高斯个数
-        # Extract points that satisfy the gradient condition
-        # 初始化 扩展后的3D高斯梯度为 0张量，并用实际当前梯度填充前面的部分
+        n_init_points = self.get_xyz.shape[0]   # 克隆后高斯的个数
+
+        # 克隆后所有高斯的 梯度。前一部分：旧高斯的原梯度；后一部分：克隆的新高斯的梯度（0 tensor）
         padded_grad = torch.zeros((n_init_points), device="cuda")   # (N_3DGS,)
         padded_grad[: grads.shape[0]] = grads.squeeze()
 
         # 2. 标记出满足（条件1 && 条件2）的大3D高斯 分裂成 两个小3D高斯
-        # 条件1：累加梯度 >= 阈值
+        # 条件1：累加梯度 >= 阈值（旧高斯中）
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
         # 条件2：最大缩放因子（最长轴） > （控制密度的百分比，0.01）*（所有train相机包围圈的半径 * 1.1）
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent)
