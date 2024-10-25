@@ -470,7 +470,7 @@ class GaussianModel:
         n_init_points = self.get_xyz.shape[0]   # 克隆后高斯的个数
 
         # 克隆后所有高斯的 梯度。前一部分：旧高斯的原梯度；后一部分：克隆的新高斯的梯度（0 tensor）
-        padded_grad = torch.zeros((n_init_points), device="cuda")   # (N_3DGS,)
+        padded_grad = torch.zeros((n_init_points), device="cuda")   # (N,)
         padded_grad[: grads.shape[0]] = grads.squeeze()
 
         # 2. 标记出满足（条件1 && 条件2）的大3D高斯 分裂成 两个小3D高斯
@@ -480,15 +480,21 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent)
 
         # 3. 分裂
-        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)     # 标准差：被分裂的大3D高斯的缩放因子 复制N-1次，[N_select3DGS, 3] ==> [N_selected3DGS * 2, 3]
-        means = torch.zeros((stds.size(0), 3), device="cuda")       # 均值：初始化为0，[N_selected3DGS * 2, 3]
-        samples = torch.normal(mean=means, std=stds)                # 生成标准正态分布的随机样本，均值为0，标准差为stds，[N_selected3DGS * 2, 3]
-        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)    # 被分裂的大3D高斯的旋转四元数转为旋转矩阵，并复制N-1次，[N_selected3DGS, 3, 3] ==> [N_selected3DGS * 2, 3, 3]
+        # (1) 计算分裂后新高斯的位置：基于大3D高斯的分布 进行标准正态采样，再通过偏移和旋转调整位置
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)     # 标准差：被分裂的大3D高斯的缩放因子 复制N-1次，[N_selected, 3] ==> [N_selected * 2, 3]
+        means = torch.zeros((stds.size(0), 3), device="cuda")       # 均值：为0，意为在大高斯局部坐标系中基于其概率密度进行采样，[N_selected * 2, 3]
+        samples = torch.normal(mean=means, std=stds)                # 从大高斯椭球的正态分布中随机采样新高斯中心位置的偏移量。标准正态分布均值为0，标准差为stds，[N_selected * 2, 3]
+        # 更可能沿最大轴方向上发生显著偏移
 
-        # 新的两个小3D高斯的位置，以原先大高斯作为概率密度函数进行采样的：大3D高斯的旋转矩阵 @ 随机样本`sample`，再加上大3D高斯的位置，[N_selected3DGS * 2, 3, 3] @ [N_selected3DGS * 2, 3, 1] = [N_selected3DGS * 2, 3, 1] ==> [N_selected3DGS * 2, 3]（bmm: 批量矩阵乘法，对输入矩阵的最后两个维度执行矩阵乘法，其他维度不变）
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)    # 新高斯的旋转 = 被分裂的大高斯的旋转，旋转四元数==>旋转矩阵，并复制N-1次，[N_selected, 3, 3] ==> [N_selected * 2, 3, 3]
+
+        # 新的两个小3D高斯中心的位置 = 大3D高斯的旋转矩阵 @ 局部坐标系中的偏移量 + 大3D高斯中心的位置
+        # 乘以旋转矩阵rots：为了将采样的偏移量恢复回其在世界坐标系中的真实位置
+        # [N_selected * 2, 3, 3] @ [N_selected * 2, 3, 1] = [N_selected * 2, 3, 1] ==> [N_selected * 2, 3]（bmm: 批量矩阵乘法，对输入矩阵的最后两个维度执行矩阵乘法，其他维度不变）
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+
         # 新的两个小3D高斯的缩放因子，以原先大高斯的缩放因子除以 φ = 0.8 * N = 1.6得到
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)) # [N_selected3DGS * 2, 3]
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)) # [N_selected * 2, 3]
         # 剩下的参数直接复制
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
