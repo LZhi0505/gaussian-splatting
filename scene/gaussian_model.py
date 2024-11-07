@@ -66,8 +66,8 @@ class GaussianModel:
         self._opacity = torch.empty(0)      # 各3D高斯的 不透明度（sigmoid前的），控制可见性
         self.max_radii2D = torch.empty(0)   # 各3D高斯 投影到所有相机图像平面的最大半径的最高值
 
-        self.xyz_gradient_accum = torch.empty(0)    # 3D高斯中心位置 梯度的累积值，当它太大的时候要对高斯体进行分裂，太小代表under要复制
-        self.denom = torch.empty(0)                 # 与累积梯度配合使用，表示统计了多少次累积梯度，用于计算每个高斯体的平均梯度时需除以它（denom = denominator，分母）
+        self.xyz_gradient_accum = torch.empty(0)    # loss对各3D高斯中心 2D投影位置梯度 的L2范数 的累加值
+        self.denom = torch.empty(0)                 # loss对各3D高斯中心 2D投影位置梯度 的累加次数（denom = denominator，分母）
 
         self.optimizer = None  # 优化器，用于调整上述参数以改进模型（论文中采用Adam，见附录B Algorithm 1的伪代码）
 
@@ -184,6 +184,10 @@ class GaussianModel:
 
         # 将以上需计算的参数设置为模型的可训练参数
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))    # 各3D高斯的中心位置，(N, 3)
+        # 固定3D位置不优化的解决方法（3选1）：
+        # (1) 移除 _xyz 参数：从优化器的参数列表中移除 _xyz，例如在设置优化器时跳过 _xyz，这样它不会被更新
+        # (2) 在反传时不返回loss对meas3D的梯度
+        # (3) 在前向传播参数中使用 means3D.detach()：如果你希望 _xyz 参数在计算过程中保持不变，可以使用 self._xyz.detach() 将其从计算图中分离出来
         self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))     # 球谐函数直流分量的系数，(N, 1, 3)
         self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))    # 球谐函数高阶分量的系数，(N, (最大球谐阶数 + 1)² - 1, 3)
         self._scaling = nn.Parameter(scales.requires_grad_(True))       # 缩放因子，(N, 3)
@@ -199,7 +203,7 @@ class GaussianModel:
         # 在训练过程中，用于控制3D高斯的密度，在`densify_and_clone`中被使用
         self.percent_dense = training_args.percent_dense
 
-        # 初始化 累积3D高斯中心点位置梯度的张量，用于之后判断是否需要对3D高斯进行克隆或切分
+        # 初始化 loss对各3D高斯中心 2D投影位置梯度 的L2范数 的累加值 的张量，用于之后判断是否需要对3D高斯进行克隆或分裂
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")  # 坐标的累积梯度
 
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")  # 梯度累积的次数，用于计算每个高斯体的平均梯度时需除以它
@@ -537,17 +541,17 @@ class GaussianModel:
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         """
         增稠和剪枝
-            max_grad：       最大梯度阈值，即 arguments中的 densify_grad_threshold，默认为0.0002，决定是否应基于2D位置梯度对3D高斯进行增稠的阈值
+            max_grad：       最大2D投影位置梯度阈值，默认为0.0002，决定是否应对3D高斯进行增稠
             min_opacity：    最小不透明度阈值，默认为0.005
             extent：         所有train相机包围圈的半径 * 1.1
-            max_screen_size：    <= 3000代为None；[3100, 14900]代为20
+            max_screen_size：    高斯最大半径阈值。<= 3000代为None；[3100, 14900]代为20
         """
-        grads = self.xyz_gradient_accum / self.denom  # 计算从开始训练到当前迭代次数下 各3D高斯投影在所有相机图像平面各像素上累加的 梯度 的L2范数 的平均值，(N,)
+        grads = self.xyz_gradient_accum / self.denom  # 计算从开始训练到当前迭代次数下 loss对各3D高斯中心 2D投影位置梯度 的L2范数 的累加值 的平均值，(N,)
         grads[grads.isnan()] = 0.0  # NaN值设为0，保持数值稳定性
 
         # 1. 增稠
-        self.densify_and_clone(grads, max_grad, extent)  # 对under reconstruction的区域 克隆 增稠（累加梯度的L2范数 >= 阈值 && 最长轴 <= percent_dense(0.01)*所有train相机包围圈的半径*1.1）
-        self.densify_and_split(grads, max_grad, extent)  # 对over reconstruction的区域 分裂 增稠（累加梯度 >= 阈值 && 最长轴 > percent_dense*所有train相机包围圈的半径*1.1）
+        self.densify_and_clone(grads, max_grad, extent)  # 对 under reconstruction的区域 克隆（累加梯度均值 >= 阈值 && 最长轴 <= percent_dense(0.01)*所有train相机包围圈的半径*1.1）
+        self.densify_and_split(grads, max_grad, extent)  # 对 over  reconstruction的区域 分裂（累加梯度均值 >= 阈值 && 最长轴 > percent_dense*所有train相机包围圈的半径*1.1）
 
         # 2. 剪枝（不透明度 < 最低阈值 || 3D高斯太大 || 3D高斯针状）
         # 条件1：不透明度 < 最低阈值0.005
@@ -566,11 +570,11 @@ class GaussianModel:
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         """
-        累加所有3D高斯投影在2D图像平面各像素上 梯度 的L2范数，与累加次数
-            viewspace_point_tensor: 各3D高斯投影到当前相机图像平面上的2D坐标
-            update_filter: 各3D高斯投影到当前相机图像平面上半径>0的mask
+        累加 loss对所有高斯中心2D投影位置梯度 的L2范数 与 次数
+            viewspace_point_tensor: 各3D高斯中心 2D投影像素坐标（实际只用于接收梯度）
+            update_filter:          各3D高斯投影到某一训练相机图像平面上半径>0的mask
         """
-        # 选择投影到当前相机图像平面上半径>0的3D高斯 投影在2D平面坐标处的 x、y方向上的梯度，并计算这些梯度的L2范数；并在训练过程中一直累加
+        # 筛选被训练相机可见的3D高斯，累加 loss对所选高斯中心 2D投影位置处x、y方向上的梯度 的L2范数
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True)  # (N,)
-        # 同时记录 梯度累加的次数
+        # 同时记录 loss对所有高斯中心2D投影位置梯度 的累加次数
         self.denom[update_filter] += 1  # (N,)

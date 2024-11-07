@@ -69,10 +69,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     viewpoint_stack = None
     ema_loss_for_log = 0.0
-    ema_Ll1depth_for_log = 0.0
 
     # 使用tqdm库创建进度条，追踪训练进度
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+
     first_iter += 1
     # 开始迭代
     for iteration in range(first_iter, opt.iterations + 1):
@@ -113,7 +113,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # 使用可微光栅化器获取当前train相机视角下的渲染数据
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, return_depth=True, return_normal=True)
-        # 分别为：渲染图像，屏幕空间坐标，各3D高斯投影到当前相机图像平面上半径>0的mask，各3D高斯投影到当前相机图像平面上的半径
+        # 分别为：渲染图像，所有高斯中心 2D投影像素坐标（实际只用于接收梯度），所有高斯是否被当前相机可见的mask，所有高斯投影到当前相机图像平面上的半径
         image, viewspace_point_tensor, visibility_filter, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -125,7 +125,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        loss.backward()
+
+        loss.backward() # 触发反向传播，计算loss对所有可求导参数的梯度，并将这些梯度存储到它们的.grad属性中
 
         iter_end.record()  # 记录当前迭代的结束时间
 
@@ -149,12 +150,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             if iteration < opt.densify_until_iter:
-                # 迭代次数 < 增稠停止的迭代次数(默认为15000)，则对3D高斯模型进行增稠和修剪（根据所有高斯投影图像平面的最大半径以进行修剪）
+                # 迭代次数 < 增稠停止的迭代次数(默认为15000)，则对3D高斯模型进行增稠和剪枝（根据所有高斯投影图像平面的最大半径以进行修剪）
 
                 # 使用各高斯投影到当前相机的最大半径 更新 其投影到所有相机图像平面的最大半径的最高值（max_radii2D：记录的 各高斯投影到所有相机图像平面上的最大半径的最高值；radii：各高斯投影到当前相机图像平面的最大半径；visibility_filter：各3D高斯投影到当前相机图像平面上半径>0的mask）
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
 
-                # 累加各3D高斯 投影在所有相机图像平面各像素上 梯度 的L2范数，与累加次数
+                # 累加 loss对各高斯中心2D投影位置梯度 的L2范数 与 次数
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
@@ -163,19 +164,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # 获取各高斯投影在所有相机图像平面的最大半径的 像素阈值
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None  # <= 3000代为None；[3100, 14900]代为20
 
-                    # 增稠和剪枝操作
+                    # 增稠 和 剪枝
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
 
                 # 每迭代3000次 或 白背景且第一次增稠前(500代)，则重置所有3D高斯的不透明度（ < 0.01），防止相机附近出现伪影
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
-            # 执行优化器的一步，并准备下一次迭代
+            # 使用优化器根据梯度更新各参数
             if iteration < opt.iterations:
-                gaussians.optimizer.step()
-                gaussians.optimizer.zero_grad(set_to_none=True)
+                gaussians.optimizer.step()  # 根据各参数的梯度 调整参数
+                # 在每次迭代中，需从零开始计算新的梯度，否则梯度会累积，导致错误的更新
+                gaussians.optimizer.zero_grad(set_to_none=True) # 将所有参数的梯度设置为 None。相比于置零，因不需要创建新的零张量，可以减少内存占用
 
-            # 到达要保存训练数据的迭代次数时，保存相应迭代次数的网络模型chkpnt
+            # 到达要保存训练数据的迭代次数时，保存相应迭代次数的 高斯模型、优化器的参数和状态、高斯中心位置的学习率
             if iteration in checkpoint_iterations:
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
